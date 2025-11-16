@@ -1,0 +1,3 @@
+[submodule "intro_to_cuda"]
+	path = intro_to_cuda
+	url = git@github.com:SethHWeidman/intro_to_cuda.git
