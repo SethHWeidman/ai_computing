@@ -2,7 +2,10 @@
 
 ## `vector_add`
 
-View the implementation in [vector_add.cu](vector_add.cu).
+View the implementation in [`vector_add/vector_add.cu`](vector_add/vector_add.cu).
+
+This `vector_add` example was inspired by NVIDIA’s blog post “Even Easier Introduction to CUDA”:
+https://developer.nvidia.com/blog/even-easier-introduction-cuda/
 
 ### Overview
 
@@ -17,6 +20,7 @@ Script containing a CUDA kernel that:
 To build, run:
 
 ```
+cd vector_add
 nvcc -arch=compute_89 -code=sm_89 vector_add.cu -o vector_add
 ```
 
@@ -25,8 +29,8 @@ nvcc -arch=compute_89 -code=sm_89 vector_add.cu -o vector_add
 > Capability 8.9". See [NVIDIA's CUDA GPU list](https://developer.nvidia.com/cuda-gpus). Modify
 > these flags if using a GPU other than an L4.
 
-Then run `./vector_add` to see the agreement between the CPU/GPU results plus the measured
-performance, e.g.:
+Then run `./vector_add` (from the `./vector_add` directory) to see the agreement between the CPU/GPU
+results plus the measured performance, e.g.:
 
 ```
 Max error vs 3.0f = 0.000000
