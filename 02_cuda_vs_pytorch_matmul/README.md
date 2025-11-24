@@ -11,11 +11,11 @@ against `torch.mm` for multiplying large square matrices (default 2048 × 2048).
 ## Running the comparison
 
 ```bash
-cd cuda_vs_pytorch_matmul
+cd 02_cuda_vs_pytorch_matmul
 python compare.py --size 2048 --repeats 3  # key benchmark: 2048 × 2048, averaged over 3 repeats
 ```
 
-The script will JIT-build a PyTorch extension in `cuda_vs_pytorch_matmul/.torch_extensions`
+The script will JIT-build a PyTorch extension in `02_cuda_vs_pytorch_matmul/.torch_extensions`
 the first time it runs. Subsequent runs reuse the compiled binary.
 
 For each implementation you will see the averaged kernel time (milliseconds), the relative speed
@@ -41,16 +41,16 @@ Numerical match: yes
   CUDA naming convention makes it obvious that the header may declare `__global__`, `__device__`, or
   templated kernels you can include from both host C++ and device code. In this example,
   `fast_matmul_extension.cu` includes an externally defined tiled kernel from
-  `../cuda_matmul/matmul_kernels.cuh` and simply wires it up to PyTorch.
+  `../intro_to_cuda/demo3_matmul/matmul_kernels.cuh` and simply wires it up to PyTorch.
 
 ## Python ↔ CUDA bridge in this demo
 
 This directory is also intended as a small, concrete reference for how to connect CUDA kernels to
 Python via PyTorch:
 
-- `../cuda_matmul/matmul_kernels.cuh` defines the shared-memory tiled matmul kernel. We treat it as
-  a reusable CUDA header and include it from `fast_matmul_extension.cu` instead of re-defining the
-  kernel.
+- `../intro_to_cuda/demo3_matmul/matmul_kernels.cuh` defines the shared-memory tiled matmul kernel.
+  We treat it as a reusable CUDA header and include it from `fast_matmul_extension.cu` instead of
+  re-defining the kernel.
 - `fast_matmul_extension.cu` defines a `fast_mm` wrapper that:
   - Uses PyTorch tensor types (`torch::Tensor`) and utilities like `TORCH_CHECK` for argument
     validation.

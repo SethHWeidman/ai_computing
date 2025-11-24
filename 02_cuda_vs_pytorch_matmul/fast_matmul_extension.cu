@@ -2,7 +2,8 @@
 #include <c10/cuda/CUDAGuard.h>
 #include <torch/extension.h> // Brings in TORCH_CHECK, Tensor, and pybind11 glue
 
-#include "../cuda_matmul/matmul_kernels.cuh"
+// Reuse the shared-memory tiled matmul kernel from intro_to_cuda demo 3.
+#include "../intro_to_cuda/demo3_matmul/matmul_kernels.cuh"
 
 torch::Tensor fast_mm(torch::Tensor A, torch::Tensor B) {
   // TORCH_CHECK (from torch/extension.h) throws a Python-visible error if the condition fails
