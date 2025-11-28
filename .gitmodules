@@ -5,3 +5,7 @@
 [submodule "GPU-Puzzles"]
 	path = GPU-Puzzles
 	url = git@github.com:SethHWeidman/GPU-Puzzles.git
+
+[submodule "LLMs-from-scratch"]
+	path = LLMs-from-scratch
+	url = git@github.com:SethHWeidman/LLMs-from-scratch.git
