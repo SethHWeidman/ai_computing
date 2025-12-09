@@ -39,11 +39,20 @@ Max difference GPU vs CPU = 0.000000
 GPU time: 0.124 ms | CPU time: 4.902 ms | Speedup: 39.62x
 ```
 
-
 ## `02_cuda_vs_pytorch_matmul`
 
 This example reuses the shared-memory tiled matmul kernel from `intro_to_cuda/demo3_matmul` and
 wraps it in a small PyTorch C++/CUDA extension, allowing a custom CUDA kernel (`fast_mm`) and
 standard `torch.mm` to be benchmarked side by side from Python. See
 [`02_cuda_vs_pytorch_matmul/README.md`](02_cuda_vs_pytorch_matmul/README.md) for full details.
+
+## `03_streaming_softmax`
+
+This directory contains examples demonstrating the concept of streaming softmax, which is
+crucial for memory-efficient attention mechanisms. It explores how to compute the sum of
+scaled exponentials (the denominator of softmax) and the softmax dot product in a
+streaming fashion, processing data in small blocks rather than all at once. This approach
+is used to save memory in FlashAttention and similar algorithms. See
+[`03_streaming_softmax/README.md`](03_streaming_softmax/README.md) for full details.
+
 
