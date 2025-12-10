@@ -60,6 +60,12 @@ is used to save memory in FlashAttention and similar algorithms. See
 This repo contains a few adapted scripts and demos based on Sebastian Raschka's
 excellent “LLMs-from-scratch” project: https://github.com/rasbt/LLMs-from-scratch
 
+### Transpose and shape demos
+
+The file `LLMs-from-scratch/ch03/01_main-chapter-code/transpose.py` contains a small
+script demonstrating tensor transposes and reshaping operations used throughout the
+multi-head attention examples.
+
 ### KV cache reference
 
 The file `LLMs-from-scratch/ch04/03_kv-cache/gpt_with_kv_cache_reference.py` contains a
@@ -71,3 +77,9 @@ script that uses it.
 The script `LLMs-from-scratch/ch04/03_kv-cache/kv_cache_sliding_window_demo.py` is a
 small standalone demo that illustrates how the fixed-size, sliding-window KV cache buffer
 is updated (append new chunks, drop oldest entries on overflow).
+
+#### Cached causal mask offsets demo
+
+The script `LLMs-from-scratch/ch04/03_kv-cache/mask_offsets_demo.py` visualizes the
+causal mask construction when using a KV cache, showing how query positions are offset
+relative to the cached key window.
