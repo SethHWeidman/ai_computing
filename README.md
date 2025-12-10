@@ -55,8 +55,19 @@ streaming fashion, processing data in small blocks rather than all at once. This
 is used to save memory in FlashAttention and similar algorithms. See
 [`03_streaming_softmax/README.md`](03_streaming_softmax/README.md) for full details.
 
-## KV cache reference
+## LLMs-from-scratch references
+
+This repo contains a few adapted scripts and demos based on Sebastian Raschka's
+excellent “LLMs-from-scratch” project: https://github.com/rasbt/LLMs-from-scratch
+
+### KV cache reference
 
 The file `LLMs-from-scratch/ch04/03_kv-cache/gpt_with_kv_cache_reference.py` contains a
 reference implementation of a GPT-style key–value (KV) cache and a simple text generation
 script that uses it.
+
+#### KV cache sliding-window demo
+
+The script `LLMs-from-scratch/ch04/03_kv-cache/kv_cache_sliding_window_demo.py` is a
+small standalone demo that illustrates how the fixed-size, sliding-window KV cache buffer
+is updated (append new chunks, drop oldest entries on overflow).
