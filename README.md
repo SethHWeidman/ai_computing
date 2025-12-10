@@ -55,4 +55,8 @@ streaming fashion, processing data in small blocks rather than all at once. This
 is used to save memory in FlashAttention and similar algorithms. See
 [`03_streaming_softmax/README.md`](03_streaming_softmax/README.md) for full details.
 
+## KV cache reference
 
+The file `LLMs-from-scratch/ch04/03_kv-cache/gpt_with_kv_cache_reference.py` contains a
+reference implementation of a GPT-style key–value (KV) cache and a simple text generation
+script that uses it.
