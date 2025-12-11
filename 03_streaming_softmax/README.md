@@ -39,7 +39,7 @@ Block sum (before rescaling) = 2.045397
 
 === Rescaling step ===
 New global max m_new = 0.8
-scale_accumulation = exp(m_old - m_new) = 0.818731
+scale_running_sum = exp(m_old - m_new) = 0.818731
 
 Rescaled prior sum   = 2.008878
 New block sum        = 2.045397
@@ -75,26 +75,3 @@ Streaming softmax · V: 0.959081
 Difference                           = 0.00000008
 ✅ SUCCESS: Streaming result matches full softmax-dot.
 ```
-
-### 03\_flash\_attention\_streaming\_softmax
-
-```bash
-python 03_flash_attention_streaming_softmax.py
-
-Batch shape: torch.Size([2, 8, 3])
-
---- Standard MHA Output ---
-tensor([[ 0.3969, -0.0506, -0.2503,  0.4973, -0.1616,  0.1172],
-        [ 0.3886, -0.0391, -0.2593,  0.5047, -0.1559,  0.1111]],
-       grad_fn=<SliceBackward0>)
-
---- Flash MHA Output ---
-tensor([[ 0.3969, -0.0506, -0.2503,  0.4973, -0.1616,  0.1172],
-        [ 0.3886, -0.0391, -0.2593,  0.5047, -0.1559,  0.1111]],
-       grad_fn=<SliceBackward0>)
-
-Max Difference: 0.00000006
-✅ SUCCESS: The Flash algorithm matches the Standard algorithm!
-```
-
-

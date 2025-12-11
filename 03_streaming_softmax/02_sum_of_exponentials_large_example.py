@@ -33,10 +33,10 @@ def sum_of_scaled_exponentials_streaming(
         new_global_max = max(running_max, block_max)
 
         # Rescale old and new contributions so they share the same max
-        scale_accumulation = math.exp(running_max - new_global_max)
-        rescaled_prior_sum = running_sum * scale_accumulation
+        scale_running_sum = math.exp(running_max - new_global_max)
+        rescaled_prior_sum = running_sum * scale_running_sum
 
-        # Exponentials for this block (stable w.r.t. new_global_max)
+        # Exponentials for this block, scaled by the new global max
         block_exps = [math.exp(x - new_global_max) for x in block]
         block_sum = sum(block_exps)
 

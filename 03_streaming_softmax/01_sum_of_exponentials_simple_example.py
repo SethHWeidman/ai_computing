@@ -1,5 +1,4 @@
 import math
-import sys
 import typing
 
 VALUES = [0.5, 0.6, 0.0, 0.2, 0.8, 0.1]
@@ -39,8 +38,8 @@ def sum_of_scaled_exponentials_streaming(
         new_global_max = max(running_max, block_max)
 
         # Rescale old and new contributions so they share the same max
-        scale_accumulation = math.exp(running_max - new_global_max)
-        rescaled_prior_sum = running_sum * scale_accumulation
+        scale_running_sum = math.exp(running_max - new_global_max)
+        rescaled_prior_sum = running_sum * scale_running_sum
 
         # Exponentials for this block, scaled by the new global max
         block_exps = [math.exp(x - new_global_max) for x in block]
@@ -67,8 +66,8 @@ def sum_of_scaled_exponentials_streaming(
                 print("=== Rescaling step ===")
                 print(f"New global max m_new = {new_global_max:.1f}")
                 print(
-                    "scale_accumulation = exp(m_old - m_new) = "
-                    f"{scale_accumulation:.6f}"
+                    "scale_running_sum = exp(m_old - m_new) = "
+                    f"{scale_running_sum:.6f}"
                 )
                 print()
 
