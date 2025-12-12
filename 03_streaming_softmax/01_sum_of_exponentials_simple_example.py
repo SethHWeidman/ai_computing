@@ -19,10 +19,10 @@ def sum_of_scaled_exponentials_full(values: list[float]) -> float:
 
 
 def sum_of_scaled_exponentials_streaming(
-    values: list[float], block_size: int = 3, verbose: bool = False
+    values: list[float], block_size: int = 3
 ) -> float:
     """
-    Streaming sum of scaled exponentials (softmax denominator).
+    Streaming sum of scaled exponentials
 
     Processes blocks one at a time, keeping track of:
       - running_max (m): max value seen so far
@@ -48,32 +48,28 @@ def sum_of_scaled_exponentials_streaming(
         running_sum = rescaled_prior_sum + block_sum
         running_max = new_global_max
 
-        if verbose:
-            if i == 0:
-                # First block
-                print(f"First block max m_old = {block_max:.1f}")
-                print(f"exp(x - m_old): {format_floats(block_exps, decimals=4)}")
-                print(f"Running sum after first block (l_old) = {running_sum:.6f}")
-                print()
-            else:
-                # Subsequent blocks
-                label = "Second block" if i == 1 else f"Block {i}"
-                print(f"{label} max m_block = {block_max:.1f}")
-                print(f"exp(x - m_block): {format_floats(block_exps, decimals=4)}")
-                print(f"Block sum (before rescaling) = {block_sum:.6f}")
-                print()
+        if i == 0:
+            # First block
+            print(f"First block max m_old = {block_max:.1f}")
+            print(f"exp(x - m_old): {format_floats(block_exps, decimals=4)}")
+            print(f"Running sum after first block (l_old) = {running_sum:.6f}")
+            print()
+        else:
+            # Subsequent blocks
+            label = "Second block" if i == 1 else f"Block {i}"
+            print(f"{label} max m_block = {block_max:.1f}")
+            print(f"exp(x - m_block): {format_floats(block_exps, decimals=4)}")
+            print(f"Block sum (before rescaling) = {block_sum:.6f}")
+            print()
 
-                print("=== Rescaling step ===")
-                print(f"New global max m_new = {new_global_max:.1f}")
-                print(
-                    "scale_running_sum = exp(m_old - m_new) = "
-                    f"{scale_running_sum:.6f}"
-                )
-                print()
+            print("=== Rescaling step ===")
+            print(f"New global max m_new = {new_global_max:.1f}")
+            print("scale_running_sum = exp(m_old - m_new) = " f"{scale_running_sum:.6f}")
+            print()
 
-                print(f"Rescaled prior sum   = {rescaled_prior_sum:.6f}")
-                print(f"New block sum        = {block_sum:.6f}")
-                print(f"Running sum (online) = {running_sum:.6f}")
+            print(f"Rescaled prior sum   = {rescaled_prior_sum:.6f}")
+            print(f"New block sum        = {block_sum:.6f}")
+            print(f"Running sum (online) = {running_sum:.6f}")
 
     return running_sum
 

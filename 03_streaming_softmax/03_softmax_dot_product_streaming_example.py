@@ -25,9 +25,8 @@ def softmax_dot_streaming(
     We imagine that q and v arrive in small blocks instead of all at once. We keep track
     of:
       - running_max (m): max score seen so far
-      - running_dot (o): numerator of softmax_dot, in the shifted space
-      - running_sum (l): denominator of softmax, in the shifted space
-
+      - running_dot (o): numerator of softmax_dot, in the rescaled space
+      - running_sum (l): denominator of softmax, in the rescaled space
 
     At the end, result = running_out / running_sum.
     """
@@ -48,7 +47,7 @@ def softmax_dot_streaming(
         new_global_max = max(running_max, block_max)
 
         # Rescale old contributions so they share the same max
-        scale_accumulation = math.exp(running_max - new_global_max)
+        scale_outputs = math.exp(running_max - new_global_max)
 
         # Exponentials for this block, scaled by the new global max
         exp_scores = torch.exp(q_block - new_global_max)
@@ -57,8 +56,9 @@ def softmax_dot_streaming(
         block_dot = torch.sum(exp_scores * v_block).item()
         block_sum = torch.sum(exp_scores).item()
 
-        rescaled_prior_output = running_dot * scale_accumulation
-        rescaled_prior_sum = running_sum * scale_accumulation
+        # Update running totals
+        rescaled_prior_output = running_dot * scale_outputs
+        rescaled_prior_sum = running_sum * scale_outputs
 
         running_dot = rescaled_prior_output + block_dot
         running_sum = rescaled_prior_sum + block_sum
