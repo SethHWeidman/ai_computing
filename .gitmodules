@@ -9,6 +9,7 @@
 [submodule "LLMs-from-scratch"]
 	path = LLMs-from-scratch
 	url = git@github.com:SethHWeidman/LLMs-from-scratch.git
+
 [submodule "flash-attn-101"]
 	path = flash-attn-101
 	url = git@github.com:SethHWeidman/flash-attn-101.git
