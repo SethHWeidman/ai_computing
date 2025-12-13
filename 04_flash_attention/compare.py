@@ -172,17 +172,12 @@ def main() -> None:
             ),
         }
 
-    def _fmt_row(items: typing.Iterable[str]) -> str:
-        return " | ".join(items)
-
     headers = [
         "implementation",
         "latency ms",
         "speedup vs Python (x)",
         "matches Python",
     ]
-    print(_fmt_row(headers))
-    print(_fmt_row(["-" * len(h) for h in headers]))
     rows = [
         ("Python (torch)", f"{python_ms:.3f}", "1.0x", "—"),
         (
@@ -210,8 +205,28 @@ def main() -> None:
             "yes" if checks["cute vs python"] else "NO",
         ),
     ]
+
+    # Compute column widths based on headers and all rows.
+    col_widths = [len(h) for h in headers]
     for row in rows:
-        print(_fmt_row(row))
+        for i, cell in enumerate(row):
+            col_widths[i] = max(col_widths[i], len(cell))
+
+    def _fmt_row_padded(items: list[str]) -> str:
+        padded = []
+        for i, cell in enumerate(items):
+            text = str(cell)
+            # Left-align text columns, right-align numeric columns.
+            if i == 0 or i == 3:
+                padded.append(text.ljust(col_widths[i]))
+            else:
+                padded.append(text.rjust(col_widths[i]))
+        return " | ".join(padded)
+
+    print(_fmt_row_padded(headers))
+    print(_fmt_row_padded("-" * w for w in col_widths))
+    for row in rows:
+        print(_fmt_row_padded(row))
 
 
 if __name__ == "__main__":
