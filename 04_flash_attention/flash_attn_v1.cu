@@ -1,0 +1,180 @@
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <torch/extension.h>
+
+#include <cuda.h>
+#include <cuda_runtime.h>
+#include <math_constants.h>
+
+#include <cmath>
+#include <limits>
+
+static inline __host__ __device__ int ceil_div(int a, int b) { return (a + b - 1) / b; }
+
+// Minimal FlashAttention v1 teaching kernel (float32 only, causal).
+// Layout: Q/K/V/O are [B, H, N, D] contiguous.
+__global__ void flash_attn_v1_kernel(const float *Q, // [B,H,N,D]
+                                     const float *K, // [B,H,N,D]
+                                     const float *V, // [B,H,N,D]
+                                     float *O,       // [B,H,N,D]
+                                     float *l,       // [B,H,N]
+                                     float *m,       // [B,H,N]
+                                     int B, int H, int N, int D, float softmax_scale) {
+  constexpr int Br = 16;
+  constexpr int Bc = 16;
+
+  // grid: (B, H, Tr) where Tr = ceil(N / Br)
+  int b = blockIdx.x;
+  int h = blockIdx.y;
+  int ti = blockIdx.z;   // query-tile index
+  int tid = threadIdx.x; // 0..Br-1
+
+  int row = ti * Br + tid; // query row this thread owns
+  if (row >= N)
+    return;
+
+  // base offsets
+  // index for Q/K/V/O: (((b*H + h)*N + t)*D + d)
+  int bh = b * H + h;
+  int q_base = (bh * N + row) * D;
+  int lm_idx = (bh * N + row);
+
+  // Shared memory layout (all float):
+  // sQ: [Br, D], sK: [Bc, D], sV: [Bc, D], sP: [Br, Bc]
+  extern __shared__ float smem[];
+  float *sQ = smem;        // Br*D
+  float *sK = sQ + Br * D; // Bc*D
+  float *sV = sK + Bc * D; // Bc*D
+  float *sP = sV + Bc * D; // Br*Bc
+
+  // Load this thread's Q row into shared
+  for (int d = 0; d < D; d++) {
+    sQ[tid * D + d] = Q[q_base + d];
+  }
+
+  float mi = m[lm_idx];
+  float li = l[lm_idx];
+
+  int Tc = ceil_div(N, Bc);
+  int j_max = min(ti, Tc - 1); // causal: only attend to <= current tile
+
+  for (int tj = 0; tj <= j_max; tj++) {
+    // Cooperative load K/V tile tj into shared
+    int k_row = tj * Bc + tid; // tid in [0,Br) and Br==Bc
+    int kv_base = (bh * N + k_row) * D;
+
+    if (tid < Bc) {
+      if (k_row < N) {
+        for (int d = 0; d < D; d++) {
+          sK[tid * D + d] = K[kv_base + d];
+          sV[tid * D + d] = V[kv_base + d];
+        }
+      } else {
+        for (int d = 0; d < D; d++) {
+          sK[tid * D + d] = 0.0f;
+          sV[tid * D + d] = 0.0f;
+        }
+      }
+    }
+    __syncthreads();
+
+    // 1) Compute logits for this row against the Bc keys in this tile
+    float block_max = -CUDART_INF_F;
+    for (int k = 0; k < Bc; k++) {
+      int col = tj * Bc + k;
+
+      float s = -CUDART_INF_F;
+      if (col < N) {
+        bool masked = (col > row);
+        if (!masked) {
+          float acc = 0.0f;
+          // dot(Q[row], K[col])
+          for (int d = 0; d < D; d++) {
+            acc += sQ[tid * D + d] * sK[k * D + d];
+          }
+          s = acc * softmax_scale;
+        }
+      }
+
+      sP[tid * Bc + k] = s;
+      block_max = fmaxf(block_max, s);
+    }
+
+    // 2) Convert logits -> p = exp(logit - block_max), and sum
+    float block_sum = 0.0f;
+    for (int k = 0; k < Bc; k++) {
+      float s = sP[tid * Bc + k];
+      float p = (s == -CUDART_INF_F) ? 0.0f : __expf(s - block_max);
+      sP[tid * Bc + k] = p;
+      block_sum += p;
+    }
+
+    // 3) Merge (mi, li) with this block’s (block_max, block_sum)
+    float mi_new = fmaxf(mi, block_max);
+    float alpha = __expf(mi - mi_new);
+    float beta = __expf(block_max - mi_new);
+    float li_new = alpha * li + beta * block_sum;
+
+    // 4) Update output row:
+    // O = (alpha*li*O + beta*(P@V)) / li_new
+    int o_base = (bh * N + row) * D;
+    for (int d = 0; d < D; d++) {
+      float pv = 0.0f;
+      for (int k = 0; k < Bc; k++) {
+        pv += sP[tid * Bc + k] * sV[k * D + d];
+      }
+      float old_o = O[o_base + d];
+      float new_o = (alpha * li * old_o + beta * pv) / li_new;
+      O[o_base + d] = new_o;
+    }
+
+    mi = mi_new;
+    li = li_new;
+
+    __syncthreads();
+  }
+
+  m[lm_idx] = mi;
+  l[lm_idx] = li;
+}
+
+torch::Tensor flash_attn_v1(torch::Tensor q, torch::Tensor k, torch::Tensor v) {
+  TORCH_CHECK(q.is_cuda() && k.is_cuda() && v.is_cuda(), "q, k, v must be CUDA tensors");
+  TORCH_CHECK(q.dim() == 4, "q must be 4D (B, H, N, D)");
+  TORCH_CHECK(q.sizes() == k.sizes() && q.sizes() == v.sizes(), "q, k, v shapes must match");
+  TORCH_CHECK(q.scalar_type() == torch::kFloat32, "flash_attn_v1 expects float32 inputs");
+
+  auto q_contig = q.contiguous();
+  auto k_contig = k.contiguous();
+  auto v_contig = v.contiguous();
+
+  c10::cuda::CUDAGuard device_guard(q_contig.device());
+
+  int B = static_cast<int>(q_contig.size(0));
+  int H = static_cast<int>(q_contig.size(1));
+  int N = static_cast<int>(q_contig.size(2));
+  int D = static_cast<int>(q_contig.size(3));
+
+  auto o = torch::zeros_like(q_contig);
+  auto l = torch::zeros({B, H, N}, q_contig.options());
+  auto m = torch::full({B, H, N}, -std::numeric_limits<float>::infinity(), q_contig.options());
+
+  constexpr int Br = 16;
+  constexpr int Bc = 16;
+  dim3 block(Br, 1, 1);
+  dim3 grid(B, H, ceil_div(N, Br));
+
+  float softmax_scale = 1.0f / std::sqrt(static_cast<float>(D));
+  size_t smem_bytes = (Br * D + Bc * D + Bc * D + Br * Bc) * sizeof(float);
+
+  flash_attn_v1_kernel<<<grid, block, smem_bytes, at::cuda::getDefaultCUDAStream()>>>(
+      q_contig.data_ptr<float>(), k_contig.data_ptr<float>(), v_contig.data_ptr<float>(),
+      o.data_ptr<float>(), l.data_ptr<float>(), m.data_ptr<float>(), B, H, N, D, softmax_scale);
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+
+  return o;
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("flash_attn_v1", &flash_attn_v1, "Minimal FlashAttention v1 (float32, causal)");
+}

@@ -1,19 +1,26 @@
-## FlashAttention vs Python baseline
+## FlashAttention minimal demo
 
-This folder reuses the `flash-attn-101` submodule for the "fast" CUDA paths and benchmarks them
-against a simple Python/torch attention implementation.
+This folder now contains a single comparison:
 
-1. Build the `flash-attn-101` library once (from repo root):
-   ```
-   cmake -B flash-attn-101/build -S flash-attn-101
-   cmake --build flash-attn-101/build
-   ```
-2. Run the comparison:
-   ```
-   python 04_flash_attention/compare.py
-   ```
+- `compare_flash_v1.py` — builds `flash_attn_v1.cu` (float32, causal) as a lightweight
+  extension, runs it against the Python helper (per-head output), and reports whether the
+  results match.
 
-The script links directly against the built `flash-attn-101` library and re-runs all kernels
-(Python, naive GPU, CUDA FA1/FA2, CuTe FA2) in-process. Defaults match the submodule settings:
-batch=8, heads=16, seq_len=256, head_dim=64. Warm-ups are performed before timing to avoid cold
-start skew, and results are reported as × factors versus the Python baseline.
+Run it from the repo root:
+```
+python 04_flash_attention/compare_flash_v1.py
+```
+The script compiles in-place under `.torch_extensions`, seeds deterministically, and
+expects a CUDA GPU. Use `--seq-len`, `--head-dim`, `--batch-size`, and `--num-heads` to
+override defaults.
+
+### Example output
+
+Running `python 04_flash_attention/compare_flash_v1.py --seq-len 16
+  --head-dim 16 --batch-size 1 --num-heads 2`, for example, produces:
+
+```
+Shape: (1, 2, 16, 16)
+Outputs match: yes
+Max abs diff: 2.3842e-07
+```
