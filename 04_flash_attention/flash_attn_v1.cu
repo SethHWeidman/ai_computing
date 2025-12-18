@@ -135,26 +135,39 @@ __global__ void flash_attn_v1_kernel(const float *Q, // [B,H,N,D]
       block_max = fmaxf(block_max, s);
     }
 
-    // 2) Convert logits -> p = exp(logit - block_max), and sum
+    // 2/3) Streaming-softmax merge in the "global max" frame (mi_new)
+    //
+    // We already computed logits s = (Q·K)*scale and stored them in sP[tid, k].
+    // block_max is max_k sP[tid,k] for this tile.
+    //
+    // We'll update the running max for this row:
+    //   mi_new = max(mi, block_max)
+    // and rescale the *previous* denominator sum into the new max frame:
+    //   alpha = exp(mi - mi_new)   (== 1 if mi_new == mi)
+    // Then compute this tile's contributions directly in the mi_new frame:
+    //   p_k = exp(s_k - mi_new)
+    //   block_sum = sum_k p_k
+    // Finally:
+    //   li_new = alpha * li + block_sum
+    float mi_new = fmaxf(mi, block_max);
+    float alpha = __expf(mi - mi_new);
+
+    // Compute p_k in the mi_new frame (your "always scale by global max" method)
     float block_sum = 0.0f;
     for (int k = 0; k < Bc; k++) {
       float s = sP[tid * Bc + k];
-      float p = (s == -CUDART_INF_F) ? 0.0f : __expf(s - block_max);
-      sP[tid * Bc + k] = p;
+      float p = (s == -CUDART_INF_F) ? 0.0f : __expf(s - mi_new);
+      sP[tid * Bc + k] = p; // now sP holds exp(logit - mi_new)
       block_sum += p;
     }
 
-    // 3) Merge (mi, li) with this block’s (block_max, block_sum)
-    float mi_new = fmaxf(mi, block_max);
-    float alpha = __expf(mi - mi_new);
-    float beta = __expf(block_max - mi_new);
-    float li_new = alpha * li + beta * block_sum;
+    float li_new = alpha * li + block_sum;
 
-    // 4) Update output row:
-    //    O stores a running, normalized output for this token. Each tile contributes a
-    //    piece of the numerator (P@V) and the denominator (block_sum). alpha/beta
-    //    re-scale the previous tiles into the current max frame (mi_new) so the running
-    //    O stays valid. Algebraically: O = (alpha*li*O + beta*(P@V)) / li_new
+    // 4) Update output row in the same mi_new frame.
+    // Since sP now stores exp(logit - mi_new), we can form the numerator piece directly:
+    //   pv[d] = sum_k exp(s_k - mi_new) * V[k,d]
+    // and then the online-normalized update is:
+    //   O = (alpha*li*O + pv) / li_new
     int o_base = (bh_index * N + token) * D;
     for (int d = 0; d < D; d++) {
       float pv = 0.0f;
@@ -162,10 +175,11 @@ __global__ void flash_attn_v1_kernel(const float *Q, // [B,H,N,D]
         pv += sP[tid * Bc + k] * sV[k * D + d];
       }
       float old_o = O[o_base + d];
-      float new_o = (alpha * li * old_o + beta * pv) / li_new;
+      float new_o = (alpha * li * old_o + pv) / li_new;
       O[o_base + d] = new_o;
     }
 
+    // Update running stats
     mi = mi_new;
     li = li_new;
 

@@ -16,8 +16,13 @@ override defaults.
 
 ### Example output
 
-Running `python 04_flash_attention/compare_flash_v1.py --seq-len 16
-  --head-dim 16 --batch-size 1 --num-heads 2`, for example, produces:
+Running 
+
+```
+python 04_flash_attention/compare_flash_v1.py --seq-len 16 --head-dim 16 --batch-size 1 --num-heads 2
+```
+
+for example, produces:
 
 ```
 Shape: (1, 2, 16, 16)
