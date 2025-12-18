@@ -70,7 +70,7 @@ class MultiHeadAttentionBase(nn.Module):
         )
 
 
-def compute_context_vectors(
+def compute_context_vectors_unflattened(
     queries: torch.Tensor,
     keys: torch.Tensor,
     values: torch.Tensor,
@@ -78,7 +78,10 @@ def compute_context_vectors(
     dropout: nn.Module,
     use_mask: bool = True,
 ) -> torch.Tensor:
-    """Apply the standard scaled dot-product attention block.
+    """Scaled dot-product attention, returning per-head outputs (b, num_heads, num_tokens, head_dim).
+
+    This version leaves the per-head dimension intact; use compute_context_vectors for the
+    flattened (b, num_tokens, num_heads * head_dim) layout.
 
     Args:
         queries, keys, values: Shape (b, num_heads, num_tokens, head_dim)
@@ -87,10 +90,10 @@ def compute_context_vectors(
         use_mask: Whether to apply the provided mask
 
     Returns:
-        Tensor of shape (b, num_tokens, num_heads * head_dim)
+        Tensor of shape (b, num_heads, num_tokens, head_dim)
     """
 
-    b, num_heads, num_tokens, head_dim = queries.shape
+    _, _, num_tokens, head_dim = queries.shape
     attn_scores = queries @ keys.transpose(-2, -1)
 
     if mask is not None and use_mask:
@@ -102,6 +105,27 @@ def compute_context_vectors(
     attn_weights = dropout(attn_weights)
 
     context_vectors = attn_weights @ values
+    return context_vectors
+
+
+def compute_context_vectors(
+    queries: torch.Tensor,
+    keys: torch.Tensor,
+    values: torch.Tensor,
+    mask: typing.Optional[torch.Tensor],
+    dropout: nn.Module,
+    use_mask: bool = True,
+) -> torch.Tensor:
+    """Scaled dot-product attention returning flattened outputs.
+
+    Returns:
+        Tensor of shape (b, num_tokens, num_heads * head_dim)
+    """
+
+    b, num_heads, num_tokens, head_dim = queries.shape
+    context_vectors = compute_context_vectors_unflattened(
+        queries, keys, values, mask, dropout, use_mask=use_mask
+    )
     context_vectors = (
         context_vectors.transpose(1, 2)
         .contiguous()

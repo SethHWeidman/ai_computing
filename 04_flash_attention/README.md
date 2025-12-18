@@ -24,3 +24,12 @@ Shape: (1, 2, 16, 16)
 Outputs match: yes
 Max abs diff: 2.3842e-07
 ```
+
+### Scheduling note: FA1 math, FA2-style partitioning
+
+The `flash_attn_v1.cu` kernel uses the FlashAttention v1 online/streaming softmax
+recurrence (exact attention, per-row running `m`/`l`, no NxN materialization) but is
+scheduled in a v2-style way: the grid is `(B, H, ceil(N/Br))`, so each block owns one Q
+tile and loops over K/V tiles. This improves occupancy relative to the paper’s “outer
+over K/V, inner over Q” teaching layout. A precise label is “exact attention with online
+softmax, FA2-style Q-tile-parallel scheduling.”

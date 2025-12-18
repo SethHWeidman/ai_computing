@@ -22,22 +22,28 @@ __global__ void flash_attn_v1_kernel(const float *Q, // [B,H,N,D]
                                      int B, int H, int N, int D, float softmax_scale) {
   constexpr int Br = 16;
   constexpr int Bc = 16;
+  // Each block is one query tile: Br query rows, iterating over K/V tiles of width Bc.
+  // Mapping to the paper: the grid over query tiles corresponds to the paper’s inner
+  // loop over Q, while the kernel’s loop over K/V tiles corresponds to the paper’s outer
+  // loop. This is the “FA2-style” scheduling: parallelize across Q tiles (many thread
+  // blocks), then stream over K/V tiles within each block.
 
   // grid: (B, H, Tr) where Tr = ceil(N / Br)
-  int b = blockIdx.x;
-  int h = blockIdx.y;
+  int b_index = blockIdx.x;
+  int h_index = blockIdx.y;
   int ti = blockIdx.z;   // query-tile index
   int tid = threadIdx.x; // 0..Br-1
 
-  int row = ti * Br + tid; // query row this thread owns
-  if (row >= N)
+  int Q_row = ti * Br + tid; // query row this thread owns
+  if (Q_row >= N)
     return;
 
   // base offsets
   // index for Q/K/V/O: (((b*H + h)*N + t)*D + d)
-  int bh = b * H + h;
-  int q_base = (bh * N + row) * D;
-  int lm_idx = (bh * N + row);
+  int BH_index = b_index * H + h_index; // flattened batch/head index
+  int Q_base = (BH_index * N + Q_row) * D;
+  // index into running softmax stats (l/m) for this Q row
+  int lm_idx = (BH_index * N + Q_row);
 
   // Shared memory layout (all float):
   // sQ: [Br, D], sK: [Bc, D], sV: [Bc, D], sP: [Br, Bc]
@@ -49,19 +55,20 @@ __global__ void flash_attn_v1_kernel(const float *Q, // [B,H,N,D]
 
   // Load this thread's Q row into shared
   for (int d = 0; d < D; d++) {
-    sQ[tid * D + d] = Q[q_base + d];
+    sQ[tid * D + d] = Q[Q_base + d];
   }
 
   float mi = m[lm_idx];
   float li = l[lm_idx];
 
   int Tc = ceil_div(N, Bc);
-  int j_max = min(ti, Tc - 1); // causal: only attend to <= current tile
+  // causal: only attend to <= current tile (inner loop limit)
+  int j_max = min(ti, Tc - 1);
 
   for (int tj = 0; tj <= j_max; tj++) {
     // Cooperative load K/V tile tj into shared
     int k_row = tj * Bc + tid; // tid in [0,Br) and Br==Bc
-    int kv_base = (bh * N + k_row) * D;
+    int kv_base = (BH_index * N + k_row) * D;
 
     if (tid < Bc) {
       if (k_row < N) {
@@ -78,17 +85,17 @@ __global__ void flash_attn_v1_kernel(const float *Q, // [B,H,N,D]
     }
     __syncthreads();
 
-    // 1) Compute logits for this row against the Bc keys in this tile
+    // 1) Compute logits for this Q row against the Bc keys in this tile
     float block_max = -CUDART_INF_F;
     for (int k = 0; k < Bc; k++) {
       int col = tj * Bc + k;
 
       float s = -CUDART_INF_F;
       if (col < N) {
-        bool masked = (col > row);
+        bool masked = (col > Q_row);
         if (!masked) {
           float acc = 0.0f;
-          // dot(Q[row], K[col])
+          // dot(Q[Q_row], K[col])
           for (int d = 0; d < D; d++) {
             acc += sQ[tid * D + d] * sK[k * D + d];
           }
@@ -117,7 +124,7 @@ __global__ void flash_attn_v1_kernel(const float *Q, // [B,H,N,D]
 
     // 4) Update output row:
     // O = (alpha*li*O + beta*(P@V)) / li_new
-    int o_base = (bh * N + row) * D;
+    int o_base = (BH_index * N + Q_row) * D;
     for (int d = 0; d < D; d++) {
       float pv = 0.0f;
       for (int k = 0; k < Bc; k++) {
@@ -162,6 +169,9 @@ torch::Tensor flash_attn_v1(torch::Tensor q, torch::Tensor k, torch::Tensor v) {
   constexpr int Br = 16;
   constexpr int Bc = 16;
   dim3 block(Br, 1, 1);
+  // Grid over (batch, head, query-tile): the third dim breaks N (sequence length) into
+  // chunks of Br rows of Q. Each block processes one chunk at a time (paper’s inner loop
+  // over Q).
   dim3 grid(B, H, ceil_div(N, Br));
 
   float softmax_scale = 1.0f / std::sqrt(static_cast<float>(D));
