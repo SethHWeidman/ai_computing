@@ -74,7 +74,8 @@ __global__ void flash_attn_v1_kernel(const float *Q, // [B,H,N,D]
   float *sV = sK + Bc * D; // Bc*D
   float *sP = sV + Bc * D; // Br*Bc
 
-  // Load this thread's Q row into shared
+  // Load this thread’s query vector Q[batch, head, token, :] into shared memory row
+  // sQ[tid, :].
   for (int d = 0; d < D; d++) {
     sQ[tid * D + d] = Q[q_base + d];
   }
@@ -82,13 +83,17 @@ __global__ void flash_attn_v1_kernel(const float *Q, // [B,H,N,D]
   float mi = m[lm_idx];
   float li = l[lm_idx];
 
+  // Number of K/V tiles (each tile covers Bc columns along N)
   int Tc = ceil_div(N, Bc);
-  // causal: only attend to <= current tile (inner loop limit)
+  // causal: restrict K/V tile index to the current query tile (tile_q) and clamp to the
+  // last valid tile (Tc-1)
   int j_max = min(tile_q, Tc - 1);
 
   for (int tj = 0; tj <= j_max; tj++) {
     // Cooperative load K/V tile tj into shared
     int k_row = tj * Bc + tid; // tid in [0,Br) and Br==Bc
+    // K/V are also laid out [B, H, N, D]; kv_base is the start of row k_row for this
+    // (batch, head) slice
     int kv_base = (bh_index * N + k_row) * D;
 
     if (tid < Bc) {
@@ -104,6 +109,8 @@ __global__ void flash_attn_v1_kernel(const float *Q, // [B,H,N,D]
         }
       }
     }
+    // Each thread writes one row of sK/sV, but the dot products below read every row.
+    // Synchronize so all shared rows are fully written before any thread starts reading.
     __syncthreads();
 
     // 1) Compute logits for this Q row against the Bc keys in this tile
@@ -144,7 +151,10 @@ __global__ void flash_attn_v1_kernel(const float *Q, // [B,H,N,D]
     float li_new = alpha * li + beta * block_sum;
 
     // 4) Update output row:
-    // O = (alpha*li*O + beta*(P@V)) / li_new
+    //    O stores a running, normalized output for this token. Each tile contributes a
+    //    piece of the numerator (P@V) and the denominator (block_sum). alpha/beta
+    //    re-scale the previous tiles into the current max frame (mi_new) so the running
+    //    O stays valid. Algebraically: O = (alpha*li*O + beta*(P@V)) / li_new
     int o_base = (bh_index * N + token) * D;
     for (int d = 0; d < D; d++) {
       float pv = 0.0f;
