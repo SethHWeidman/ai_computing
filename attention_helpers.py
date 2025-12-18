@@ -78,15 +78,18 @@ def compute_context_vectors_unflattened(
     dropout: nn.Module,
     use_mask: bool = True,
 ) -> torch.Tensor:
-    """Scaled dot-product attention, returning per-head outputs (b, num_heads, num_tokens, head_dim).
+    """Scaled dot-product attention, returning per-head outputs (b, num_heads,
+    num_tokens, head_dim).
 
-    This version leaves the per-head dimension intact; use compute_context_vectors for the
-    flattened (b, num_tokens, num_heads * head_dim) layout.
+    This version leaves the per-head dimension intact; use compute_context_vectors for
+    the flattened (b, num_tokens, num_heads * head_dim) layout.
 
     Args:
         queries, keys, values: Shape (b, num_heads, num_tokens, head_dim)
-        mask: Optional causal mask of shape (context_len, context_len)
-        dropout: Dropout module applied to attention weights
+        mask: Optional
+        causal mask of shape (context_len, context_len)
+        dropout: Dropout module applied
+        to attention weights
         use_mask: Whether to apply the provided mask
 
     Returns:
@@ -194,6 +197,7 @@ if __name__ == "__main__":
     num_heads = 4
     context_length = 8
 
+    torch.manual_seed(251217)
     x = torch.randn(batch_size, num_tokens, d_in)
     mha = MultiHeadAttentionBase(
         d_in=d_in,
@@ -210,7 +214,7 @@ if __name__ == "__main__":
         f"Q/K/V shape: {queries.shape}  # (batch_size, num_heads, num_tokens, head_dim)"
     )
 
-    context = mha._compute_context_vectors(queries, keys, values, use_mask=True)
+    context = mha._compute_context_vectors(queries, keys, values)
     print(
         f"Context vectors shape: {context.shape}  # (batch_size, num_tokens, num_heads "
         "* head_dim"
