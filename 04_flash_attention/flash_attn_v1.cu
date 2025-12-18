@@ -20,6 +20,11 @@ __global__ void flash_attn_v1_kernel(const float *Q, // [B,H,N,D]
                                      float *l,       // [B,H,N]
                                      float *m,       // [B,H,N]
                                      int B, int H, int N, int D, float softmax_scale) {
+  // We're in a 4D tensor [B, H, N, D]. B, H, N, and D represent the dimensions of the
+  // Tensor. This kernel operates at index `blockIdx.x` B, `blockIdx.y` H, and on a 16
+  // row slice within the 2D [N, D] array. Each thread handles a single row; each thread
+  // block handles a tile of 16 rows.
+
   constexpr int Br = 16;
   constexpr int Bc = 16;
   // Each block is one query tile: Br query rows, iterating over K/V tiles of width Bc.
@@ -29,21 +34,37 @@ __global__ void flash_attn_v1_kernel(const float *Q, // [B,H,N,D]
   // blocks), then stream over K/V tiles within each block.
 
   // grid: (B, H, Tr) where Tr = ceil(N / Br)
-  int b_index = blockIdx.x;
-  int h_index = blockIdx.y;
-  int ti = blockIdx.z;   // query-tile index
+  int batch = blockIdx.x;
+  int head = blockIdx.y;
+  // query-tile index (which "block of 16" within the N dimension we're operating on)
+  int tile_q = blockIdx.z;
   int tid = threadIdx.x; // 0..Br-1
 
-  int Q_row = ti * Br + tid; // query row this thread owns
-  if (Q_row >= N)
+  // row along the `N` dimension this thread owns (will be used to index into Q, O, l,
+  // and m)
+  int token = tile_q * Br + tid;
+  if (token >= N)
     return;
 
   // base offsets
   // index for Q/K/V/O: (((b*H + h)*N + t)*D + d)
-  int BH_index = b_index * H + h_index; // flattened batch/head index
-  int Q_base = (BH_index * N + Q_row) * D;
-  // index into running softmax stats (l/m) for this Q row
-  int lm_idx = (BH_index * N + Q_row);
+  int bh_index = batch * H + head; // flattened batch/head index
+  // `token` is the position along the sequence-length dimension N that this thread owns.
+  // Q is laid out as contiguous [B, H, N, D].
+  //
+  // Flatten (batch, head) -> bh_index, so each (batch, head) corresponds to one
+  // contiguous [N, D] matrix.
+  //
+  // bh_index * N         = number of token-rows before this (batch, head) slice
+  // + token              = selects the token-row within that slice
+  // * D                  = converts token-row index into element offset (each row has D
+  //                        floats)
+  //
+  // So `q_base` is the linear offset for Q[batch, head, token, 0].
+  int q_base = (bh_index * N + token) * D;
+  // l and m are [B, H, N] (one scalar per token position), so the offset is just: lm_idx
+  // = index of (batch, head, token) in the flattened [B*H*N] array.
+  int lm_idx = (bh_index * N + token);
 
   // Shared memory layout (all float):
   // sQ: [Br, D], sK: [Bc, D], sV: [Bc, D], sP: [Br, Bc]
@@ -55,7 +76,7 @@ __global__ void flash_attn_v1_kernel(const float *Q, // [B,H,N,D]
 
   // Load this thread's Q row into shared
   for (int d = 0; d < D; d++) {
-    sQ[tid * D + d] = Q[Q_base + d];
+    sQ[tid * D + d] = Q[q_base + d];
   }
 
   float mi = m[lm_idx];
@@ -63,12 +84,12 @@ __global__ void flash_attn_v1_kernel(const float *Q, // [B,H,N,D]
 
   int Tc = ceil_div(N, Bc);
   // causal: only attend to <= current tile (inner loop limit)
-  int j_max = min(ti, Tc - 1);
+  int j_max = min(tile_q, Tc - 1);
 
   for (int tj = 0; tj <= j_max; tj++) {
     // Cooperative load K/V tile tj into shared
     int k_row = tj * Bc + tid; // tid in [0,Br) and Br==Bc
-    int kv_base = (BH_index * N + k_row) * D;
+    int kv_base = (bh_index * N + k_row) * D;
 
     if (tid < Bc) {
       if (k_row < N) {
@@ -92,7 +113,7 @@ __global__ void flash_attn_v1_kernel(const float *Q, // [B,H,N,D]
 
       float s = -CUDART_INF_F;
       if (col < N) {
-        bool masked = (col > Q_row);
+        bool masked = (col > token);
         if (!masked) {
           float acc = 0.0f;
           // dot(Q[Q_row], K[col])
@@ -124,7 +145,7 @@ __global__ void flash_attn_v1_kernel(const float *Q, // [B,H,N,D]
 
     // 4) Update output row:
     // O = (alpha*li*O + beta*(P@V)) / li_new
-    int o_base = (BH_index * N + Q_row) * D;
+    int o_base = (bh_index * N + token) * D;
     for (int d = 0; d < D; d++) {
       float pv = 0.0f;
       for (int k = 0; k < Bc; k++) {

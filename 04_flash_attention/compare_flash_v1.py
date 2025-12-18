@@ -26,8 +26,8 @@ def load_extension() -> nn.Module:
 
     if cpp_extension.CUDA_HOME is None:
         raise RuntimeError(
-            "CUDA toolkit headers not found (CUDA_HOME is None). Install the CUDA toolkit or set "
-            "CUDA_HOME."
+            "CUDA toolkit headers not found (CUDA_HOME is None). Install the CUDA "
+            "toolkit or set CUDA_HOME."
         )
 
     return cpp_extension.load(
@@ -40,7 +40,8 @@ def load_extension() -> nn.Module:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Check outputs of flash_attn_v1.cu against the Python helper (float32, causal)."
+        description="Check outputs of flash_attn_v1.cu against the Python helper "
+        "(float32, causal)."
     )
     parser.add_argument(
         "--seq-len", type=int, default=128, help="Sequence length (default: 128)"
@@ -59,8 +60,8 @@ def main() -> None:
     if not cuda.is_available():
         raise RuntimeError("CUDA GPU is required for this comparison")
 
-    torch.manual_seed(202402)
-    cuda.manual_seed_all(202402)
+    torch.manual_seed(251217)
+    cuda.manual_seed_all(251217)
 
     module = load_extension()
     device = torch.device("cuda")
