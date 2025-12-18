@@ -69,15 +69,17 @@ __global__ void flash_attn_v1_kernel(const float *Q, // [B,H,N,D]
   // Shared memory layout (all float):
   // sQ: [Br, D], sK: [Bc, D], sV: [Bc, D], sP: [Br, Bc]
   extern __shared__ float smem[];
-  float *sQ = smem;        // Br*D
-  float *sK = sQ + Br * D; // Bc*D
-  float *sV = sK + Bc * D; // Bc*D
-  float *sP = sV + Bc * D; // Br*Bc
+  float *sQ = smem;         // Br*D
+  float *sK = sQ + Br * D;  // Bc*D
+  float *sV = sK + Bc * D;  // Bc*D
+  float *sP = sV + Bc * D;  // Br*Bc
+  float *sY = sP + Br * Bc; // Br*D  (numerator accumulator per row)
 
   // Load this thread’s query vector Q[batch, head, token, :] into shared memory row
   // sQ[tid, :].
   for (int d = 0; d < D; d++) {
     sQ[tid * D + d] = Q[q_base + d];
+    sY[tid * D + d] = 0.0f; // numerator accumulator starts at 0
   }
 
   float mi = m[lm_idx];
@@ -85,10 +87,16 @@ __global__ void flash_attn_v1_kernel(const float *Q, // [B,H,N,D]
 
   // Number of K/V tiles (each tile covers Bc columns along N)
   int Tc = ceil_div(N, Bc);
-  // causal: restrict K/V tile index to the current query tile (tile_q) and clamp to the
-  // last valid tile (Tc-1)
+  // Causal attention (lower-triangular):
+  // - Tile pruning: for this Q tile `tile_q`, any K/V tile `tj > tile_q` is entirely in
+  //   the future => skip it.
+  // - Diagonal tile (`tj == tile_q`) still needs the per-element mask (`col > token`).
+  // Example (Br=Bc=16): tile_q=2 owns Q rows [32..47]; tj=3 would be cols [48..63] =>
+  // fully masked.
+  // This is why we cap the loop with `j_max = min(tile_q, Tc - 1)`.
   int j_max = min(tile_q, Tc - 1);
-
+  // For non-causal: use `int j_max = Tc - 1;` and remove the `(col > token)` check
+  // below.
   for (int tj = 0; tj <= j_max; tj++) {
     // Cooperative load K/V tile tj into shared
     int k_row = tj * Bc + tid; // tid in [0,Br) and Br==Bc
@@ -96,17 +104,19 @@ __global__ void flash_attn_v1_kernel(const float *Q, // [B,H,N,D]
     // (batch, head) slice
     int kv_base = (bh_index * N + k_row) * D;
 
-    if (tid < Bc) {
-      if (k_row < N) {
-        for (int d = 0; d < D; d++) {
-          sK[tid * D + d] = K[kv_base + d];
-          sV[tid * D + d] = V[kv_base + d];
-        }
-      } else {
-        for (int d = 0; d < D; d++) {
-          sK[tid * D + d] = 0.0f;
-          sV[tid * D + d] = 0.0f;
-        }
+    if (k_row < N) {
+      // Load K and V vectors for this token position into shared memory:
+      //   sK[tid, :] = K[batch, head, k_row, :]
+      //   sV[tid, :] = V[batch, head, k_row, :]
+      for (int d = 0; d < D; d++) {
+        sK[tid * D + d] = K[kv_base + d];
+        sV[tid * D + d] = V[kv_base + d];
+      }
+    } else {
+      // Out-of-bounds tile at the end: zero-fill to avoid reading garbage.
+      for (int d = 0; d < D; d++) {
+        sK[tid * D + d] = 0.0f;
+        sV[tid * D + d] = 0.0f;
       }
     }
     // Each thread writes one row of sK/sV, but the dot products below read every row.
@@ -152,7 +162,8 @@ __global__ void flash_attn_v1_kernel(const float *Q, // [B,H,N,D]
     float mi_new = fmaxf(mi, block_max);
     float alpha = __expf(mi - mi_new);
 
-    // Compute p_k in the mi_new frame (your "always scale by global max" method)
+    // Compute p_k in the mi_new frame; same method as
+    // https://github.com/SethHWeidman/ai_computing/blob/master/03_streaming_softmax/02_sum_of_exponentials_large_example.py
     float block_sum = 0.0f;
     for (int k = 0; k < Bc; k++) {
       float s = sP[tid * Bc + k];
@@ -163,20 +174,14 @@ __global__ void flash_attn_v1_kernel(const float *Q, // [B,H,N,D]
 
     float li_new = alpha * li + block_sum;
 
-    // 4) Update output row in the same mi_new frame.
-    // Since sP now stores exp(logit - mi_new), we can form the numerator piece directly:
-    //   pv[d] = sum_k exp(s_k - mi_new) * V[k,d]
-    // and then the online-normalized update is:
-    //   O = (alpha*li*O + pv) / li_new
-    int o_base = (bh_index * N + token) * D;
-    for (int d = 0; d < D; d++) {
+    // 4) Stream the numerator y in the same mi_new frame:
+    // y[d] = alpha*y[d] + sum_k p_k * V[k,d]
+    for (int d = 0; d < D; ++d) {
       float pv = 0.0f;
-      for (int k = 0; k < Bc; k++) {
+      for (int k = 0; k < Bc; ++k) {
         pv += sP[tid * Bc + k] * sV[k * D + d];
       }
-      float old_o = O[o_base + d];
-      float new_o = (alpha * li * old_o + pv) / li_new;
-      O[o_base + d] = new_o;
+      sY[tid * D + d] = alpha * sY[tid * D + d] + pv;
     }
 
     // Update running stats
@@ -186,6 +191,17 @@ __global__ void flash_attn_v1_kernel(const float *Q, // [B,H,N,D]
     __syncthreads();
   }
 
+  // Write normalized output once: O = y / l. Follows the pattern of "dividing the accumulated
+  // numerator and denominator at the end" from:
+  // https://github.com/SethHWeidman/ai_computing/blob/master/03_streaming_softmax/03_softmax_dot_product_streaming_example.py
+  int o_base = (bh_index * N + token) * D;
+  float inv_li = 1.0f / li;
+  for (int d = 0; d < D; ++d) {
+    O[o_base + d] = sY[tid * D + d] * inv_li;
+  }
+
+  // Save per-row softmax stats (m, l). Not needed for forward output, but used by
+  // FlashAttention backward to reconstruct P without storing NxN.
   m[lm_idx] = mi;
   l[lm_idx] = li;
 }
@@ -220,7 +236,12 @@ torch::Tensor flash_attn_v1(torch::Tensor q, torch::Tensor k, torch::Tensor v) {
   dim3 grid(B, H, ceil_div(N, Br));
 
   float softmax_scale = 1.0f / std::sqrt(static_cast<float>(D));
-  size_t smem_bytes = (Br * D + Bc * D + Bc * D + Br * Bc) * sizeof(float);
+  size_t smem_bytes = (Br * D    // sQ
+                       + Bc * D  // sK
+                       + Bc * D  // sV
+                       + Br * Bc // sP
+                       + Br * D) // sY
+                      * sizeof(float);
 
   flash_attn_v1_kernel<<<grid, block, smem_bytes, at::cuda::getDefaultCUDAStream()>>>(
       q_contig.data_ptr<float>(), k_contig.data_ptr<float>(), v_contig.data_ptr<float>(),
