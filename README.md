@@ -95,3 +95,11 @@ model. It illustrates how fewer key/value “groups” (`n_kv_groups`) can be us
 heads (`n_heads`), and how the cached key/value tensors are expanded via
 `repeat_interleave` to match the number of query heads during attention. See
 `LLMs-from-scratch/ch04/04_gqa/README.md` for background and memory-savings context.
+
+### MLA + KV cache reference
+
+The file `LLMs-from-scratch/ch04/05_mla/gpt_with_kv_mla_reference.py` contains a compact
+companion to the GQA reference above that demonstrates Multi-Head Latent Attention (MLA).
+Instead of reducing K/V heads via grouping, MLA caches a compressed latent K/V stream
+(`latent_dim`) and reconstructs per-head keys/values on-the-fly during attention. See
+`LLMs-from-scratch/ch04/05_mla/README.md` for background and memory-savings context.
