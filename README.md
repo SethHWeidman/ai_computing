@@ -103,3 +103,10 @@ companion to the GQA reference above that demonstrates Multi-Head Latent Attenti
 Instead of reducing K/V heads via grouping, MLA caches a compressed latent K/V stream
 (`latent_dim`) and reconstructs per-head keys/values on-the-fly during attention. See
 `LLMs-from-scratch/ch04/05_mla/README.md` for background and memory-savings context.
+
+### SWA + KV cache reference
+
+The file `LLMs-from-scratch/ch04/06_swa/gpt_with_kv_swa_reference.py` is a compact sliding
+window attention (SWA) demo with a KV cache. It shows how to enforce both causal masking
+and a fixed-size local attention window (`sliding_window_size`) during cached generation.
+See `LLMs-from-scratch/ch04/06_swa/README.md` for background and memory-savings context.
