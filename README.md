@@ -4,15 +4,15 @@
 
 View the implementation in [`01_vector_add/vector_add.cu`](01_vector_add/vector_add.cu).
 
-This `01_vector_add` example was inspired by NVIDIA’s blog post “Even Easier Introduction to CUDA”:
-https://developer.nvidia.com/blog/even-easier-introduction-cuda/
+This `01_vector_add` example was inspired by NVIDIA’s blog post “Even Easier Introduction
+to CUDA”: https://developer.nvidia.com/blog/even-easier-introduction-cuda/
 
 ### Overview
 
 Script containing a CUDA kernel that:
 
-* Initializes two vectors of length 1M, one of which has values of 1.0, the other of which has
-  values of 2.0.
+* Initializes two vectors of length 1M, one of which has values of 1.0, the other of
+  which has values of 2.0.
 * Adds them on the GPU, using 256 threads per block.
 * Confirms that the resulting values are all 3.0.
 
@@ -25,13 +25,14 @@ cd 01_vector_add
 nvcc -arch=compute_89 -code=sm_89 vector_add.cu -o vector_add
 ```
 
-> **Note:** the `-arch=compute_89` and `-code=sm_89` arguments tell the code to generate PTX and
-> machine code, respectively, for the Ada Lovelace / L4 GPUs which NVIDIA lists as "Compute
-> Capability 8.9". See [NVIDIA's CUDA GPU list](https://developer.nvidia.com/cuda-gpus). Modify
-> these flags if using a GPU other than an L4.
+> **Note:** the `-arch=compute_89` and `-code=sm_89` arguments tell the code to generate
+> PTX and machine code, respectively, for the Ada Lovelace / L4 GPUs which NVIDIA lists
+> as "Compute Capability 8.9". See [NVIDIA's CUDA GPU
+> list](https://developer.nvidia.com/cuda-gpus). Modify these flags if using a GPU other
+> than an L4.
 
-Then run `./vector_add` (from the `./01_vector_add` directory) to see the agreement between the
-CPU/GPU results plus the measured performance, e.g.:
+Then run `./vector_add` (from the `./01_vector_add` directory) to see the agreement
+between the CPU/GPU results plus the measured performance, e.g.:
 
 ```
 Max error vs 3.0f = 0.000000
@@ -41,10 +42,12 @@ GPU time: 0.124 ms | CPU time: 4.902 ms | Speedup: 39.62x
 
 ## `02_cuda_vs_pytorch_matmul`
 
-This example reuses the shared-memory tiled matmul kernel from `intro_to_cuda/demo3_matmul` and
-wraps it in a small PyTorch C++/CUDA extension, allowing a custom CUDA kernel (`fast_mm`) and
-standard `torch.mm` to be benchmarked side by side from Python. See
-[`02_cuda_vs_pytorch_matmul/README.md`](02_cuda_vs_pytorch_matmul/README.md) for full details.
+This example reuses the shared-memory tiled matmul kernel from
+`intro_to_cuda/demo3_matmul` and wraps it in a small PyTorch C++/CUDA extension, allowing
+a custom CUDA kernel (`fast_mm`) and standard `torch.mm` to be benchmarked side by side
+from Python. See
+[`02_cuda_vs_pytorch_matmul/README.md`](02_cuda_vs_pytorch_matmul/README.md) for full
+details.
 
 ## `03_streaming_softmax`
 
@@ -57,8 +60,8 @@ is used to save memory in FlashAttention and similar algorithms. See
 
 ## LLMs-from-scratch references
 
-This repo contains a few adapted scripts and demos based on Sebastian Raschka's
-excellent “LLMs-from-scratch” project: https://github.com/rasbt/LLMs-from-scratch
+This repo contains a few adapted scripts and demos based on Sebastian Raschka's excellent
+“LLMs-from-scratch” project: https://github.com/rasbt/LLMs-from-scratch
 
 ### Transpose and shape demos
 
@@ -83,3 +86,12 @@ is updated (append new chunks, drop oldest entries on overflow).
 The script `LLMs-from-scratch/ch04/03_kv-cache/mask_offsets_demo.py` visualizes the
 causal mask construction when using a KV cache, showing how query positions are offset
 relative to the cached key window.
+
+### GQA + KV cache reference
+
+The file `LLMs-from-scratch/ch04/04_gqa/gpt_with_kv_gqa_reference.py` contains a compact
+reference implementation of Grouped-Query Attention (GQA) with a KV cache in a GPT-style
+model. It illustrates how fewer key/value “groups” (`n_kv_groups`) can be used than query
+heads (`n_heads`), and how the cached key/value tensors are expanded via
+`repeat_interleave` to match the number of query heads during attention. See
+`LLMs-from-scratch/ch04/04_gqa/README.md` for background and memory-savings context.
