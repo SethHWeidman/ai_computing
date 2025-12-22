@@ -79,8 +79,8 @@ def main() -> None:
         k = torch.randn(shape, device=device, dtype=dtype)
         v = torch.randn(shape, device=device, dtype=dtype)
 
-        python_out = attention_helpers.compute_context_vectors_unflattened(
-            q, k, v, causal_mask, dropout, use_mask=True
+        python_out = attention_helpers.scaled_dot_product_attention(
+            q, k, v, mask=causal_mask, dropout=dropout, return_per_head=True
         )
         flash_out = module.flash_attn_v1(q, k, v)
 

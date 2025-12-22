@@ -35,11 +35,10 @@ class MultiHeadAttentionBase(nn.Module):
             "mask", torch.triu(torch.ones(context_length, context_length), diagonal=1)
         )
 
-    def _project_qkv(
+    def project_qkv(
         self, x: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Project inputs to per-head Q, K, V with head-wise layout."""
-
         b, num_tokens, _ = x.shape
 
         keys = self.W_key(x)
@@ -56,50 +55,38 @@ class MultiHeadAttentionBase(nn.Module):
 
         return queries, keys, values
 
-    def _compute_context_vectors(
+    def compute_context_vectors(
         self,
         queries: torch.Tensor,
         keys: torch.Tensor,
         values: torch.Tensor,
         use_mask: bool = True,
     ) -> torch.Tensor:
-        """Apply scaled dot-product attention using the shared helper."""
-
-        return compute_context_vectors(
-            queries, keys, values, self.mask, self.dropout, use_mask=use_mask
+        """Apply scaled dot-product attention and return flattened outputs."""
+        return scaled_dot_product_attention(
+            queries,
+            keys,
+            values,
+            mask=(self.mask if use_mask else None),
+            dropout=self.dropout,
+            return_per_head=False,
         )
 
 
-def compute_context_vectors_unflattened(
+def scaled_dot_product_attention(
     queries: torch.Tensor,
     keys: torch.Tensor,
     values: torch.Tensor,
     mask: typing.Optional[torch.Tensor],
     dropout: nn.Module,
-    use_mask: bool = True,
+    *,
+    return_per_head: bool = False,
 ) -> torch.Tensor:
-    """Scaled dot-product attention, returning per-head outputs (b, num_heads,
-    num_tokens, head_dim).
-
-    This version leaves the per-head dimension intact; use compute_context_vectors for
-    the flattened (b, num_tokens, num_heads * head_dim) layout.
-
-    Args:
-        queries, keys, values: Shape (b, num_heads, num_tokens, head_dim)
-        mask: Optional
-        causal mask of shape (context_len, context_len)
-        dropout: Dropout module applied
-        to attention weights
-        use_mask: Whether to apply the provided mask
-
-    Returns:
-        Tensor of shape (b, num_heads, num_tokens, head_dim)
-    """
-
-    _, _, num_tokens, head_dim = queries.shape
+    """Scaled dot-product attention with an optional causal mask."""
+    b, num_heads, num_tokens, head_dim = queries.shape
     attn_scores = queries @ keys.transpose(-2, -1)
 
-    if mask is not None and use_mask:
+    if mask is not None:
         mask_bool = mask.bool()[:num_tokens, :num_tokens]
         attn_scores = attn_scores.masked_fill(mask_bool, float("-inf"))
 
@@ -108,33 +95,14 @@ def compute_context_vectors_unflattened(
     attn_weights = dropout(attn_weights)
 
     context_vectors = attn_weights @ values
-    return context_vectors
+    if return_per_head:
+        return context_vectors
 
-
-def compute_context_vectors(
-    queries: torch.Tensor,
-    keys: torch.Tensor,
-    values: torch.Tensor,
-    mask: typing.Optional[torch.Tensor],
-    dropout: nn.Module,
-    use_mask: bool = True,
-) -> torch.Tensor:
-    """Scaled dot-product attention returning flattened outputs.
-
-    Returns:
-        Tensor of shape (b, num_tokens, num_heads * head_dim)
-    """
-
-    b, num_heads, num_tokens, head_dim = queries.shape
-    context_vectors = compute_context_vectors_unflattened(
-        queries, keys, values, mask, dropout, use_mask=use_mask
-    )
-    context_vectors = (
+    return (
         context_vectors.transpose(1, 2)
         .contiguous()
         .view(b, num_tokens, num_heads * head_dim)
     )
-    return context_vectors
 
 
 class LayerNorm(nn.Module):
@@ -209,12 +177,12 @@ if __name__ == "__main__":
     )
 
     print(f"Input x shape: {x.shape}  # (batch_size, num_tokens, d_in)")
-    queries, keys, values = mha._project_qkv(x)
+    queries, keys, values = mha.project_qkv(x)
     print(
         f"Q/K/V shape: {queries.shape}  # (batch_size, num_heads, num_tokens, head_dim)"
     )
 
-    context = mha._compute_context_vectors(queries, keys, values)
+    context = mha.compute_context_vectors(queries, keys, values)
     print(
         f"Context vectors shape: {context.shape}  # (batch_size, num_tokens, num_heads "
         "* head_dim"
