@@ -26,7 +26,7 @@ def run_python(script: str | pathlib.Path) -> subprocess.CompletedProcess[str]:
 def test_multihead_attention_example_shapes_match() -> None:
     """multihead_attention_example should report matching output shapes."""
     proc = run_python(
-        LLMS_ROOT / "ch03/01_main-chapter-code/multihead_attention_example.py"
+        LLMS_ROOT / "ch03/01_main-chapter-code/multihead_attention_reference.py"
     )
     out = proc.stdout
 
@@ -40,7 +40,9 @@ def test_multihead_attention_example_shapes_match() -> None:
 
 def test_gpt_kv_cache_reference_matches_ch04_output() -> None:
     """KV-cache reference GPT should produce the same text as the ch04 GPT script."""
-    proc_baseline = run_python(CH04_ROOT / "03_kv-cache/gpt_ch04.py")
+    proc_baseline = run_python(
+        CH04_ROOT / "03_kv-cache/gpt_without_kv_cache_reference.py"
+    )
     proc_cached = run_python(CH04_ROOT / "03_kv-cache/gpt_with_kv_cache_reference.py")
 
     out_base = proc_baseline.stdout
@@ -62,4 +64,10 @@ def test_gpt_kv_cache_reference_matches_ch04_output() -> None:
 def test_mla_reference_script_runs() -> None:
     """Ensure the MLA KV-cache reference script executes without errors."""
     proc = run_python(CH04_ROOT / "05_mla/gpt_with_kv_mla_reference.py")
+    assert "Output text:" in proc.stdout
+
+
+def test_moe_reference_script_runs() -> None:
+    """Ensure the MoE KV-cache reference script executes without errors."""
+    proc = run_python(CH04_ROOT / "07_moe/gpt_with_kv_moe_reference.py")
     assert "Output text:" in proc.stdout
