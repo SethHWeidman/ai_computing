@@ -69,6 +69,13 @@ The file `LLMs-from-scratch/ch03/01_main-chapter-code/transpose.py` contains a s
 script demonstrating tensor transposes and reshaping operations used throughout the
 multi-head attention examples.
 
+### Multi-head attention demo
+
+The file `LLMs-from-scratch/ch03/01_main-chapter-code/multihead_attention_reference.py` is
+a small shape-oriented demo comparing a single-head attention block to a multi-head
+attention block (built on `attention_helpers.MultiHeadAttentionBase`), and prints the
+intermediate/output tensor shapes.
+
 ### KV cache reference
 
 The file `LLMs-from-scratch/ch04/03_kv-cache/gpt_with_kv_cache_reference.py` contains a
@@ -110,3 +117,9 @@ The file `LLMs-from-scratch/ch04/06_swa/gpt_with_kv_swa_reference.py` is a compa
 window attention (SWA) demo with a KV cache. It shows how to enforce both causal masking
 and a fixed-size local attention window (`sliding_window_size`) during cached generation.
 See `LLMs-from-scratch/ch04/06_swa/README.md` for background and memory-savings context.
+
+### MoE + KV cache reference
+
+The script `LLMs-from-scratch/ch04/07_moe/moe_index_add_demo.py` is a small standalone
+demo showing how MoE expert outputs can be accumulated back into a shared per-token
+output buffer via `index_add_` when a token receives contributions from multiple experts.
