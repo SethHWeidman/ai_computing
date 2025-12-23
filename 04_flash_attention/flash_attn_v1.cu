@@ -67,19 +67,25 @@ __global__ void flash_attn_v1_kernel(const float *Q, // [B,H,N,D]
   int lm_idx = (bh_index * N + token);
 
   // Shared memory layout (all float):
-  // sQ: [Br, D], sK: [Bc, D], sV: [Bc, D], sP: [Br, Bc]
+  // - sQ: [Br, D] query tile
+  // - sK: [Bc, D] key tile (current tj)
+  // - sV: [Bc, D] value tile (current tj)
+  // - sP: [Br, Bc] per-row attention scratch:
+  //       first pre-softmax scores (QK^T * scale, with -inf for masked), then
+  //       overwritten with exp(score - mi_new) (scaled, unnormalized weights).
+  // - sY: [Br, D] running numerator y_i = sum_k p_{i,k} * v_k across all tiles
   extern __shared__ float smem[];
   float *sQ = smem;         // Br*D
   float *sK = sQ + Br * D;  // Bc*D
   float *sV = sK + Bc * D;  // Bc*D
   float *sP = sV + Bc * D;  // Br*Bc
-  float *sY = sP + Br * Bc; // Br*D  (numerator accumulator per row)
+  float *sY = sP + Br * Bc; // Br*D
 
   // Load this thread’s query vector Q[batch, head, token, :] into shared memory row
   // sQ[tid, :].
   for (int d = 0; d < D; d++) {
     sQ[tid * D + d] = Q[q_base + d];
-    sY[tid * D + d] = 0.0f; // numerator accumulator starts at 0
+    sY[tid * D + d] = 0.0f; // y_i starts at 0 (unnormalized output numerator)
   }
 
   float mi = m[lm_idx];
@@ -174,10 +180,31 @@ __global__ void flash_attn_v1_kernel(const float *Q, // [B,H,N,D]
 
     float li_new = alpha * li + block_sum;
 
-    // 4) Stream the numerator y in the same mi_new frame:
-    // y[d] = alpha*y[d] + sum_k p_k * V[k,d]
+    // 4) Stream the numerator y in the same mi_new frame.
+    //
+    // At this point:
+    //   sP[tid, k] = exp(logit(token, col_k) - mi_new)   for k = 0..Bc-1
+    //   sV[k, d]   = V[col_k, d]                         for d = 0..D-1
+    //
+    // For this query row (this thread), the tile contributes:
+    //
+    //   pv[d] = sum_{k=0..Bc-1} sP[tid, k] * sV[k, d]
+    //
+    // i.e. take the length-Bc "probability row vector" sP[tid, :] and multiply it by the
+    // [Bc x D] value tile sV to produce a length-D vector pv.
+    //
+    // This is exactly the tile-local piece of (P @ V) for this row.
+    //
+    // We maintain a running numerator y in the same max-shifted frame (mi_new):
+    //
+    //   y_new[d] = alpha * y_old[d] + pv[d]
+    //
+    // where alpha rescales the previous numerator from the old max frame (mi) into the
+    // new frame (mi_new).
     for (int d = 0; d < D; ++d) {
       float pv = 0.0f;
+      // Dot product over the Bc columns in this tile:
+      // (sP row for this token) · (column d of sV)
       for (int k = 0; k < Bc; ++k) {
         pv += sP[tid * Bc + k] * sV[k * D + d];
       }
