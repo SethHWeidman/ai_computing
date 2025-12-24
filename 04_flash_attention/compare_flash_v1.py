@@ -2,7 +2,7 @@
 """Compare the Python helper implementation against multiple CUDA kernels."""
 import argparse
 import pathlib
-import sys
+from sys import path
 from os import environ
 import torch
 from torch import cuda, nn
@@ -10,8 +10,8 @@ from torch.utils import cpp_extension
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 HERE = pathlib.Path(__file__).resolve().parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.append(str(REPO_ROOT))
+if str(REPO_ROOT) not in path:
+    path.append(str(REPO_ROOT))
 import attention_helpers
 
 
@@ -34,8 +34,8 @@ def load_extension(*, name: str, source: pathlib.Path) -> nn.Module:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Check multiple CUDA FlashAttention kernels against the Python helper "
-        "(float32, causal)."
+        description="Check multiple CUDA FlashAttention kernels against the Python "
+        "helper (float32, causal)."
     )
     parser.add_argument(
         "--seq-len", type=int, default=128, help="Sequence length (default: 128)"
@@ -57,8 +57,8 @@ def main() -> None:
     v1_module = load_extension(
         name="flash_attn_v1_ext", source=HERE / "flash_attn_v1.cu"
     )
-    v15_module = load_extension(
-        name="flash_attn_v15_ext", source=HERE / "flash_attn_v15.cu"
+    v1_5_module = load_extension(
+        name="flash_attn_v1_5_ext", source=HERE / "flash_attn_v1_5.cu"
     )
     device = torch.device("cuda")
     dtype = torch.float32
@@ -85,11 +85,11 @@ def main() -> None:
     print(f"flash_attn_v1.cu max abs diff: {v1_max_diff:.4e}")
 
     with torch.no_grad():
-        v15_out = v15_module.flash_attn_v1(q, k, v)
-        v15_close = torch.allclose(v15_out, python_out, rtol=1e-4, atol=1e-4)
-        v15_max_diff = torch.max(torch.abs(v15_out - python_out)).item()
-    print(f"flash_attn_v15.cu match: {'yes' if v15_close else 'NO'}")
-    print(f"flash_attn_v15.cu max abs diff: {v15_max_diff:.4e}")
+        v1_5_out = v1_5_module.flash_attn_v1_5(q, k, v)
+        v1_5_close = torch.allclose(v1_5_out, python_out, rtol=1e-4, atol=1e-4)
+        v1_5_max_diff = torch.max(torch.abs(v1_5_out - python_out)).item()
+    print(f"flash_attn_v1_5.cu match: {'yes' if v1_5_close else 'NO'}")
+    print(f"flash_attn_v1_5.cu max abs diff: {v1_5_max_diff:.4e}")
 
 
 if __name__ == "__main__":
