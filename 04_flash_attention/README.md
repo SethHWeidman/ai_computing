@@ -38,9 +38,14 @@ flash_attn_v15.cu max abs diff: 2.3842e-07
 
 ### Kernel notes
 
+- Naming: we call the second kernel “v1.5” because it adopts FlashAttention v2-style
+  tiling (parallelize across Q tiles: grid includes the query-tile index), but it does
+  not attempt to implement many of the other FA v2 optimizations (e.g., Tensor Core math,
+  FP16/BF16 paths, fused/warp-level reductions, etc.). It’s “v1 math with v2-style
+  tiling”.
 - `flash_attn_v1.cu`: FlashAttention v1 online/streaming softmax recurrence (exact
-  attention, per-row running `m`/`l`, no NxN materialization) with FA2-style Q-tile
-  parallelism (grid `(B, H, ceil(N/Br))`, stream K/V tiles inside the block).
-- `flash_attn_v15.cu`: same math, similar FA2-style tiling, but intentionally keeps the
-  implementation simple (does not include many FA2 optimizations). Current version assumes
-  no padding: `N % 16 == 0`.
+  attention, per-row running `m`/`l`, no NxN materialization) with FA1-style scheduling
+  (grid `(B, H)`, loop over Q tiles `tile_q` inside the kernel).
+- `flash_attn_v15.cu`: same FA v1 recurrence, but with v2-style tiling (grid `(B, H,
+  ceil(N/Br))`, one Q tile per block, stream K/V tiles inside the block). Current version
+  assumes no padding: `N % 16 == 0`.
