@@ -104,11 +104,24 @@ def scaled_dot_product_attention(
     if return_per_head:
         return context_vectors
 
-    return (
-        context_vectors.transpose(1, 2)
-        .contiguous()
-        .view(b, num_tokens, num_heads * head_dim)
-    )
+    # 1. logical_reordering:
+    # Move 'num_heads' next to 'head_dim' so they are logically adjacent.
+    # Shape becomes: (b, num_tokens, num_heads, head_dim)
+    context_vectors = context_vectors.transpose(1, 2)
+
+    # 2. physical_concatenation:
+    # Force the tensor to be contiguous in memory.
+    # This physically moves the data so that [head_0, head_1, ...] are
+    # sitting next to each other in memory for each token.
+    # This IS the "concatenation" step.
+    context_vectors = context_vectors.contiguous()
+
+    # 3. flatten:
+    # View the adjacent head dimensions as one single dimension.
+    # Shape becomes: (b, num_tokens, d_out)
+    concatenated_heads = context_vectors.view(b, num_tokens, num_heads * head_dim)
+
+    return concatenated_heads
 
 
 class LayerNorm(nn.Module):
