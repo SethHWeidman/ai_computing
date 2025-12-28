@@ -25,10 +25,7 @@ def load_extension(*, name: str, source: pathlib.Path) -> nn.Module:
             "toolkit or set CUDA_HOME."
         )
     return cpp_extension.load(
-        name=name,
-        sources=[str(source)],
-        extra_cflags=["-std=c++17"],
-        verbose=False,
+        name=name, sources=[str(source)], extra_cflags=["-std=c++17"], verbose=False
     )
 
 
@@ -73,7 +70,7 @@ def main() -> None:
         k = torch.randn(shape, device=device, dtype=dtype)
         v = torch.randn(shape, device=device, dtype=dtype)
         python_out = attention_helpers.scaled_dot_product_attention(
-            q, k, v, mask=causal_mask, dropout=dropout, return_per_head=True
+            q, k, v, dropout=dropout, mask=causal_mask, return_per_head=True
         )
     print(f"Shape: {shape}")
 

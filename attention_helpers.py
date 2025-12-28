@@ -39,6 +39,7 @@ class MultiHeadAttentionBase(nn.Module):
         self, x: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Project inputs to per-head Q, K, V with head-wise layout."""
+
         b, num_tokens, _ = x.shape
 
         keys = self.W_key(x)
@@ -63,13 +64,13 @@ class MultiHeadAttentionBase(nn.Module):
         use_mask: bool = True,
     ) -> torch.Tensor:
         """Apply scaled dot-product attention and return flattened outputs."""
+
         return scaled_dot_product_attention(
             queries,
             keys,
             values,
-            mask=(self.mask if use_mask else None),
             dropout=self.dropout,
-            return_per_head=False,
+            mask=(self.mask if use_mask else None),
         )
 
 
@@ -77,12 +78,17 @@ def scaled_dot_product_attention(
     queries: torch.Tensor,
     keys: torch.Tensor,
     values: torch.Tensor,
-    mask: typing.Optional[torch.Tensor],
     dropout: nn.Module,
-    *,
     return_per_head: bool = False,
+    mask: typing.Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    """Scaled dot-product attention with an optional causal mask."""
+    """Scaled dot-product attention with an optional causal mask.
+
+    If `return_per_head` is True, returns context vectors with shape `(batch, num_heads,
+    num_tokens, head_dim)`; otherwise returns the flattened output shape `(batch,
+    num_tokens, num_heads * head_dim)`.
+    """
+
     b, num_heads, num_tokens, head_dim = queries.shape
     attn_scores = queries @ keys.transpose(-2, -1)
 
@@ -165,7 +171,6 @@ if __name__ == "__main__":
     num_heads = 4
     context_length = 8
 
-    torch.manual_seed(251217)
     x = torch.randn(batch_size, num_tokens, d_in)
     mha = MultiHeadAttentionBase(
         d_in=d_in,
