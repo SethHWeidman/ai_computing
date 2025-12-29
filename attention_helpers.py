@@ -38,7 +38,11 @@ class MultiHeadAttentionBase(nn.Module):
     def project_qkv(
         self, x: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Project inputs to per-head Q, K, V with head-wise layout."""
+        """Project inputs to per-head Q, K, V with head-wise layout.
+
+        Returns (queries, keys, values), each with shape (batch, num_heads, num_tokens,
+        head_dim).
+        """
 
         b, num_tokens, _ = x.shape
 
@@ -111,9 +115,8 @@ def scaled_dot_product_attention(
 
     # 2. physical_concatenation:
     # Force the tensor to be contiguous in memory.
-    # This physically moves the data so that [head_0, head_1, ...] are
-    # sitting next to each other in memory for each token.
-    # This IS the "concatenation" step.
+    # This physically moves the data so that [head_0, head_1, ...] are sitting next to
+    # each other in memory for each token. This is the "concatenation" step.
     context_vectors = context_vectors.contiguous()
 
     # 3. flatten:
