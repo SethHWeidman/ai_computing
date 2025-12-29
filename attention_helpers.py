@@ -14,8 +14,8 @@ class MultiHeadAttentionBase(nn.Module):
         d_in: int,
         d_out: int,
         context_length: int,
-        dropout: float,
         num_heads: int,
+        dropout: float = 0.0,
         qkv_bias: bool = False,
     ) -> None:
         super().__init__()
@@ -91,6 +91,7 @@ def scaled_dot_product_attention(
     If `return_per_head` is True, returns context vectors with shape `(batch, num_heads,
     num_tokens, head_dim)`; otherwise returns the flattened output shape `(batch,
     num_tokens, num_heads * head_dim)`.
+    The former shape, that is returned if `return_per_head` is True,
     """
 
     b, num_heads, num_tokens, head_dim = queries.shape
@@ -98,7 +99,7 @@ def scaled_dot_product_attention(
 
     if mask is not None:
         mask_bool = mask.bool()[:num_tokens, :num_tokens]
-        attn_scores = attn_scores.masked_fill(mask_bool, float("-inf"))
+        attn_scores.masked_fill_(mask_bool, -torch.inf)
 
     scale = head_dim**-0.5
     attn_weights = torch.softmax(attn_scores * scale, dim=-1)
@@ -192,8 +193,8 @@ if __name__ == "__main__":
         d_in=d_in,
         d_out=d_out,
         context_length=context_length,
-        dropout=0.0,
         num_heads=num_heads,
+        dropout=0.0,
         qkv_bias=True,
     )
 
