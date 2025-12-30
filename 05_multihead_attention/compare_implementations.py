@@ -63,7 +63,7 @@ class MultiHeadAttentionExplainer(nn.Module):
         d_in: int,
         d_out: int,
         context_length: int,
-        num_heads: int,
+        num_attention_heads: int,
         qkv_bias: bool = False,
         # typically `dropout` would be included to help model generalizability; omitted
         # here for simplicity
@@ -71,11 +71,11 @@ class MultiHeadAttentionExplainer(nn.Module):
     ) -> None:
         super().__init__()
         self.d_out = d_out
-        self.num_heads = num_heads
-        self.d_head = d_out // num_heads
+        self.num_attention_heads = num_attention_heads
+        self.d_head = d_out // num_attention_heads
 
         # the list of independent heads
-        self.heads = nn.ModuleList(
+        self.attention_heads = nn.ModuleList(
             [
                 SingleHeadAttention(
                     d_in=d_in,
@@ -83,7 +83,7 @@ class MultiHeadAttentionExplainer(nn.Module):
                     context_length=context_length,
                     qkv_bias=qkv_bias,
                 )
-                for _ in range(num_heads)
+                for _ in range(num_attention_heads)
             ]
         )
 
@@ -91,15 +91,15 @@ class MultiHeadAttentionExplainer(nn.Module):
         self.out_proj = nn.Linear(d_out, d_out)
 
     def forward(self, input_vectors: torch.Tensor) -> torch.Tensor:
-        # step 1: loop over heads and collect outputs
+        # step 1: compute self-attention within each head
         head_outputs = []
-        for head in self.heads:
+        for head in self.attention_heads:
             head_outputs.append(head(input_vectors))
 
-        # step 2: concatenation
+        # step 2: concatenate head outputs
         concatenated_outputs = torch.cat(head_outputs, dim=-1)
 
-        # step 3: mixing
+        # step 3: mix them via a standard linear neural network operation
         return self.out_proj(concatenated_outputs)
 
 
@@ -109,7 +109,8 @@ class MultiHeadAttentionExplainer(nn.Module):
 
 
 class MultiHeadAttentionOptimized(attention_helpers.MultiHeadAttentionBase):
-    """The standard efficient implementation inheriting from your base class."""
+    """The standard efficient implementation inheriting from the `MultiHeadAttentionBase`
+    class."""
 
     def __init__(
         self,
