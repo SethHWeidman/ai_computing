@@ -35,7 +35,7 @@ class MultiHeadAttentionBase(nn.Module):
             "mask", torch.triu(torch.ones(context_length, context_length), diagonal=1)
         )
 
-    def project_qkv(
+    def compute_qkv_per_head(
         self, x: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Project inputs to per-head Q, K, V with head-wise layout.
@@ -192,7 +192,7 @@ if __name__ == "__main__":
     )
 
     print(f"Input x shape: {x.shape}  # (batch_size, num_tokens, d_in)")
-    queries, keys, values = mha.project_qkv(x)
+    queries, keys, values = mha.compute_qkv_per_head(x)
     print(
         f"Q/K/V shape: {queries.shape}  # (batch_size, num_heads, num_tokens, head_dim)"
     )

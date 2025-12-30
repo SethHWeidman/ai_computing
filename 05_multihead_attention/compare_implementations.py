@@ -135,7 +135,7 @@ class MultiHeadAttentionOptimized(attention_helpers.MultiHeadAttentionBase):
         Standard implementation of MultiHeadAttention's `forward` method
         """
         # 1. create representations of each input vector
-        queries, keys, values = self.project_qkv(x)
+        queries, keys, values = self.compute_qkv_per_head(x)
         # 2. create output vectors, including the concatentation of head outputs
         #    This is the function that FlashAttention will speed up
         context_vectors = self.compute_context_vectors(queries, keys, values)
