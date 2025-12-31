@@ -88,7 +88,7 @@ def scaled_dot_product_attention(
 ) -> torch.Tensor:
     """Scaled dot-product attention with an optional causal mask.
 
-    If `return_per_head` is True, returns context vectors with shape `(batch, num_heads,
+    If `return_per_head` is True, returns output vectors with shape `(batch, num_heads,
     num_tokens, head_dim)`; otherwise returns the flattened output shape `(batch,
     num_tokens, num_heads * head_dim)`.
     The former shape, that is returned if `return_per_head` is True,
@@ -105,15 +105,15 @@ def scaled_dot_product_attention(
     attn_weights = torch.softmax(attn_scores * scale, dim=-1)
     attn_weights = dropout(attn_weights)
 
-    context_vectors = attn_weights @ values
+    output_vectors = attn_weights @ values
     if return_per_head:
-        return context_vectors
+        return output_vectors
 
     # Concatenate heads: transpose to (b, num_tokens, num_heads, head_dim), then make
     # memory contiguous so per-token head slices sit next to each other, and finally
     # flatten (num_heads, head_dim) -> d_out to get (b, num_tokens, d_out).
     concatenated_head_outputs = (
-        context_vectors.transpose(1, 2)
+        output_vectors.transpose(1, 2)
         .contiguous()
         .view(b, num_tokens, num_heads * head_dim)
     )
