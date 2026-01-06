@@ -13,23 +13,20 @@ class SingleHeadAttention(nn.Module):
     def __init__(
         self,
         d_in: int,
-        d_head: int,
+        d_out: int,
         context_length: int,
         # dropout: float,
         qkv_bias: bool = False,
     ) -> None:
         super().__init__()
-        # these are smaller linear layers, mapping d_in -> d_head
-        self.W_query = nn.Linear(d_in, d_head, bias=qkv_bias)
-        self.W_key = nn.Linear(d_in, d_head, bias=qkv_bias)
-        self.W_value = nn.Linear(d_in, d_head, bias=qkv_bias)
+        self.W_query = nn.Linear(d_in, d_out, bias=qkv_bias)
+        self.W_key = nn.Linear(d_in, d_out, bias=qkv_bias)
+        self.W_value = nn.Linear(d_in, d_out, bias=qkv_bias)
         # non-essential step that improves model generalizability: adding dropout to
         # attention scores
         # self.dropout = nn.Dropout(dropout)
 
-        self.register_buffer(
-            "mask", torch.triu(torch.ones(context_length, context_length), diagonal=1)
-        )
+        self.mask = torch.triu(torch.ones(context_length, context_length), diagonal=1)
 
     def forward(self, input_vectors: torch.Tensor) -> torch.Tensor:
         _, num_tokens, _ = input_vectors.shape
@@ -79,7 +76,7 @@ class MultiHeadAttentionExplainer(nn.Module):
             [
                 SingleHeadAttention(
                     d_in=d_in,
-                    d_head=self.d_head,
+                    d_out=self.d_head,
                     context_length=context_length,
                     qkv_bias=qkv_bias,
                 )
@@ -87,7 +84,7 @@ class MultiHeadAttentionExplainer(nn.Module):
             ]
         )
 
-        # the final mixing projection
+        # the final mixing operation
         self.out_proj = nn.Linear(d_out, d_out)
 
     def forward(self, input_vectors: torch.Tensor) -> torch.Tensor:
@@ -163,11 +160,17 @@ def transfer_weights(
         # 2. transfer q, k, v weights
         # the optimized model has shape (d_out, d_in)
         # we split this into 'num_heads' chunks of size (d_head, d_in)
-        wq_chunks = opt_model.W_query.weight.chunk(explainer_model.num_heads, dim=0)
-        wk_chunks = opt_model.W_key.weight.chunk(explainer_model.num_heads, dim=0)
-        wv_chunks = opt_model.W_value.weight.chunk(explainer_model.num_heads, dim=0)
+        wq_chunks = opt_model.W_query.weight.chunk(
+            explainer_model.num_attention_heads, dim=0
+        )
+        wk_chunks = opt_model.W_key.weight.chunk(
+            explainer_model.num_attention_heads, dim=0
+        )
+        wv_chunks = opt_model.W_value.weight.chunk(
+            explainer_model.num_attention_heads, dim=0
+        )
 
-        for i, head in enumerate(explainer_model.heads):
+        for i, head in enumerate(explainer_model.attention_heads):
             head.W_query.weight.copy_(wq_chunks[i])
             head.W_key.weight.copy_(wk_chunks[i])
             head.W_value.weight.copy_(wv_chunks[i])
