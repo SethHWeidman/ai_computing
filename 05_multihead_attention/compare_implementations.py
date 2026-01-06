@@ -7,7 +7,7 @@ import attention_helpers
 # -----------------------------------------------------------------------------
 
 
-class SingleHeadAttention(nn.Module):
+class SingleHeadSelfAttention(nn.Module):
     """A single attention head that performs the full self-attention mechanism."""
 
     def __init__(
@@ -74,7 +74,7 @@ class MultiHeadAttentionExplainer(nn.Module):
         # the list of independent heads
         self.attention_heads = nn.ModuleList(
             [
-                SingleHeadAttention(
+                SingleHeadSelfAttention(
                     d_in=d_in,
                     d_out=self.d_head,
                     context_length=context_length,
