@@ -11,193 +11,201 @@
 
 static inline __host__ __device__ int ceil_div(int a, int b) { return (a + b - 1) / b; }
 
+// -----------------------------------------------------------------------------
 // Minimal FlashAttention v1 teaching kernel (float32 only, causal).
-// Layout: Q/K/V/O are [B, H, N, D] contiguous.
-// Args:
-// - Q: [B, H, N, D] queries
-// - K: [B, H, N, D] keys
-// - V: [B, H, N, D] values
-// - O: [B, H, N, D] output
-// - l: [B, H, N] running denominator
-// - m: [B, H, N] running max
-// FA1-style scheduling: grid is (B, H). Each block processes *one (batch, head)*,
-// and loops over all query tiles tile_q = 0..Tr-1 inside the kernel.
+//
+// Layout: Q/K/V/O are contiguous [B, H, N, D].
+//
+// FA1-style scheduling:
+//   - grid = (B, H): one block owns ONE (batch, head) slice.
+//   - within that slice, the block loops over query tiles (outer loop).
+//   - within each query tile, it streams over key/value tiles (inner loop).
+//
+// Within a query tile:
+//   - each thread owns one query row (one token position) in that tile.
+//   - the thread maintains streaming-softmax state for that row:
+//       row_max    = m_i  (running max logit)
+//       row_sumexp = l_i  (running denominator = sum exp(logit - row_max))
+//       O_accum    = \tilde{O}_i (running numerator accumulator, length D)
+//   - at the end, it writes O = O_accum / row_sumexp.
+//
+// This is intentionally “whiteboard-aligned”, not performance-optimized.
+// -----------------------------------------------------------------------------
 __global__ void flash_attn_v1_kernel(const float *Q, const float *K, const float *V, float *O,
-                                     float *l, float *m, int B, int H, int N, int D,
-                                     float softmax_scale) {
-  // We're in a 4D tensor [B, H, N, D]. B, H, N, and D represent the dimensions of the Tensor. This
-  // kernel operates at index `blockIdx.x` B, `blockIdx.y` H, and on a 16 row slice within the 2D
-  // [N, D] array. Each thread handles a single row; each thread block handles a tile of 16 rows.
+                                     int B, int H, int N, int D, float softmax_scale) {
+  // Tile sizes (both 16 here to mirror the diagrams / simplify the kernel).
 
-  constexpr int Br = 16; // query rows per tile
-  constexpr int Bc = 16; // key/value rows per tile (cols in attention matrix)
+  // both rows in a Q tile (outer loop tile size) and rows in a K/V tile (inner loop tile size)
+  constexpr int T = 16;
 
+  // Which (batch, head) slice does this block own?
   int batch = blockIdx.x;
   int head = blockIdx.y;
-  int tid = threadIdx.x; // 0..Br-1
 
-  // base offsets
-  // index for Q/K/V/O: (((b*H + h)*N + t)*D + d)
+  // Thread index within the block:
+  //   one thread == one query row within the current Q tile.
+  int row_in_q_tile = threadIdx.x; // 0..T-1
+
+  int bh = batch * H + head; // flattened (batch, head)
+
   int bh_index = batch * H + head; // flattened (batch, head)
 
-  // Shared memory layout (all float):
-  // - sQ: [Br, D] current query tile
-  // - sK: [Bc, D] current key tile
-  // - sV: [Bc, D] current value tile
-  // - sP: [Br, Bc] per-row attention scratch (scores -> exp(scores - mi_new))
-  // - sY: [Br, D] running numerator for the current query tile (per row in the tile)
+  // ---------------------------------------------------------------------------
+  // Shared memory (float32):
+  //   sh_Q       [T, D]    current query tile
+  //   sh_K       [T, D]    current key tile
+  //   sh_V       [T, D]    current value tile
+  //   sh_S       [T, T]    score scratch for the current (Q_tile, K_tile) pair
+  //                        (overwritten in-place with exp(score - row_max_new))
+  //   sh_O_accum [T, D]    running numerator accumulator (\tilde{O}) for this Q tile
+  // ---------------------------------------------------------------------------
   extern __shared__ float smem[];
-  float *sQ = smem;         // Br*D
-  float *sK = sQ + Br * D;  // Bc*D
-  float *sV = sK + Bc * D;  // Bc*D
-  float *sP = sV + Bc * D;  // Br*Bc
-  float *sY = sP + Br * Bc; // Br*D
+  float *sh_Q = smem;               // T * D
+  float *sh_K = sh_Q + T * D;       // T * D
+  float *sh_V = sh_K + T * D;       // T * D
+  float *sh_S = sh_V + T * D;       // T * T
+  float *sh_O_accum = sh_S + T * T; // T * D
 
-  int Tc = ceil_div(N, Bc); // number of K/V tiles
-  int Tr = ceil_div(N, Br); // number of Q tiles
+  int num_kv_tiles = ceil_div(N, T);
+  int num_q_tiles = ceil_div(N, T);
 
-  // FA1-style scheduling: this block owns one (batch, head) slice (a contiguous [N, D] matrix) and
-  // iterates over query tiles tile_q = 0..Tr-1.
-  //
-  // Each tile covers Br rows along N, and each thread tid owns one row within the tile:
-  //
-  //   token = tile_q * Br + tid
-  //
-  // With contiguous [B, H, N, D] layout, the base offset of Q[batch, head, token, 0] is:
-  //
-  //   q_base = (bh_index * N + token) * D
-  for (int tile_q = 0; tile_q < Tr; ++tile_q) {
-    int token = tile_q * Br + tid;
-    int q_base = (bh_index * N + token) * D;
+  // Outer loop: iterate over Q tiles (and therefore output tiles).
+  for (int q_tile_idx = 0; q_tile_idx < num_q_tiles; ++q_tile_idx) {
+    // Global query row index (token position) owned by this thread in this tile.
+    int q_row = q_tile_idx * T + row_in_q_tile;
+    int q_base = (bh * N + q_row) * D;
+
+    // Load this thread's Q row into shared (and zero its numerator accumulator row).
+    // (Only this thread reads its own Q row / O_accum row; no sync needed.)
     for (int d = 0; d < D; ++d) {
-      sQ[tid * D + d] = Q[q_base + d];
-      sY[tid * D + d] = 0.0f;
+      sh_Q[row_in_q_tile * D + d] = Q[q_base + d];
+      sh_O_accum[row_in_q_tile * D + d] = 0.0f; // \tilde{O}_i starts at 0
     }
 
-    // Per-row streaming softmax state for THIS token (registers).
-    float mi = -CUDART_INF_F;
-    float li = 0.0f;
-    // Causal attention (lower-triangular):
-    // - Tile pruning: for this Q tile `tile_q`, any K/V tile `tj > tile_q` is entirely in the
-    //   future => skip it.
-    // - Diagonal tile (`tj == tile_q`) still needs the per-element mask (`col > token`).
-    //   Example (Br=Bc=16): tile_q=2 owns Q rows [32..47]; tj=3 would be cols [48..63] => fully
-    //   masked.
-    // This is why we cap the loop with `j_max = min(tile_q, Tc - 1)`.
-    int j_max = min(tile_q, Tc - 1);
+    // Streaming-softmax state for THIS query row (kept in registers).
+    float row_max = -CUDART_INF_F;
+    float row_sumexp = 0.0f;
 
-    for (int tj = 0; tj <= j_max; ++tj) {
-      // Cooperative load K/V tile tj into shared (one row per thread).
-      int k_row = tj * Bc + tid;
-      // Base offset for K[batch, head, k_row, 0] / V[batch, head, k_row, 0].
-      int kv_base = (bh_index * N + k_row) * D;
+    // Causal mask (lower-triangular):
+    // - K/V tiles strictly in the future are fully masked and can be skipped.
+    // - Only the diagonal tile needs per-element masking (col > q_row).
+    int kv_tile_max = q_tile_idx;
+    if (kv_tile_max > (num_kv_tiles - 1))
+      kv_tile_max = num_kv_tiles - 1;
+
+    // Inner loop: stream over K/V tiles up to the causal boundary.
+    for (int kv_tile_idx = 0; kv_tile_idx <= kv_tile_max; ++kv_tile_idx) {
+      // -----------------------------------------------------------------------
+      // Step A: load K_tile and V_tile into shared (cooperative: one row per thread).
+      // -----------------------------------------------------------------------
+      int kv_row = kv_tile_idx * T + row_in_q_tile; // global row in K/V this thread loads
+      int kv_base = (bh * N + kv_row) * D;
+
       for (int d = 0; d < D; ++d) {
-        sK[tid * D + d] = K[kv_base + d];
-        sV[tid * D + d] = V[kv_base + d];
+        sh_K[row_in_q_tile * D + d] = K[kv_base + d];
+        sh_V[row_in_q_tile * D + d] = V[kv_base + d];
       }
-      // Each thread writes one row of sK/sV, but the dot products below read every row. Synchronize
-      // so all shared rows are fully written before any thread starts reading.
+      // We will read ALL rows of sh_K/sh_V in the dot-products below.
       __syncthreads();
 
-      // 1) Compute logits for this Q row against the Bc keys in this tile
-      float block_max = -CUDART_INF_F;
+      // -----------------------------------------------------------------------
+      // Step B: compute score row S_i for this query row vs the T keys in this tile.
+      //
+      //   S_{i,k} = (Q_i · K_k) * softmax_scale
+      //
+      // Store in sh_S (and track the max over k for this row).
+      // -----------------------------------------------------------------------
+      float tile_row_max = -CUDART_INF_F;
 
-      for (int k = 0; k < Bc; ++k) {
-        int col = tj * Bc + k;
+      for (int k = 0; k < T; ++k) {
+        int col = kv_tile_idx * T + k; // global key position
 
         float s = -CUDART_INF_F;
         if (col < N) {
-          bool masked = (col > token); // causal mask within diagonal tile
+          // Only diagonal tile needs masking; this condition is safe everywhere.
+          bool masked = (col > q_row);
           if (!masked) {
             float acc = 0.0f;
-            // dot(Q[Q_row], K[col])
             for (int d = 0; d < D; ++d) {
-              acc += sQ[tid * D + d] * sK[k * D + d];
+              acc += sh_Q[row_in_q_tile * D + d] * sh_K[k * D + d];
             }
             s = acc * softmax_scale;
           }
         }
 
-        sP[tid * Bc + k] = s;
-        block_max = fmaxf(block_max, s);
-      }
-      // 2/3) Streaming-softmax merge in the "global max" frame (mi_new)
-      //
-      // We already computed logits s = (Q·K)*scale and stored them in sP[tid, k]. block_max is
-      // max_k sP[tid,k] for this tile.
-      //
-      // We'll update the running max for this row:
-      //   mi_new = max(mi, block_max)
-      // and rescale the *previous* denominator sum into the new max frame:
-      //   alpha = exp(mi - mi_new)   (== 1 if mi_new == mi)
-      // Then compute this tile's contributions directly in the mi_new frame:
-      //   p_k = exp(s_k - mi_new)
-      //   block_sum = sum_k p_k
-      // Finally:
-      //   li_new = alpha * li + block_sum
-      float mi_new = fmaxf(mi, block_max);
-      float alpha = __expf(mi - mi_new);
-
-      // Compute p_k in the mi_new frame; same method as
-      // https://github.com/SethHWeidman/ai_computing/blob/master/03_streaming_softmax/02_sum_of_exponentials_large_example.py
-      float block_sum = 0.0f;
-      for (int k = 0; k < Bc; ++k) {
-        float s = sP[tid * Bc + k];
-        float p = (s == -CUDART_INF_F) ? 0.0f : __expf(s - mi_new);
-        sP[tid * Bc + k] = p; // overwrite with exp(logit - mi_new)
-        block_sum += p;
+        sh_S[row_in_q_tile * T + k] = s;
+        tile_row_max = fmaxf(tile_row_max, s);
       }
 
-      float li_new = alpha * li + block_sum;
+      // -----------------------------------------------------------------------
+      // Step C: streaming-softmax merge (this is the core FlashAttention trick).
+      //
+      // Maintain row-wise running max m_i and running sum-exp l_i across tiles:
+      //
+      //   row_max_new = max(row_max_old, max_k S_{i,k})
+      //   rescale_old = exp(row_max_old - row_max_new)
+      //
+      // Then compute this tile’s contributions in the NEW max frame:
+      //
+      //   P_{i,k} = exp(S_{i,k} - row_max_new)   (0 if masked / -inf)
+      //
+      // Update denominator:
+      //   row_sumexp_new = rescale_old * row_sumexp_old + sum_k P_{i,k}
+      // -----------------------------------------------------------------------
 
-      // 4) Stream the numerator y in the same mi_new frame.
+      float row_max_new = fmaxf(row_max, tile_row_max);
+      float rescale_old = __expf(row_max - row_max_new);
+
+      float tile_row_sumexp = 0.0f;
+      for (int k = 0; k < T; ++k) {
+        float s = sh_S[row_in_q_tile * T + k];
+        float p = (s == -CUDART_INF_F) ? 0.0f : __expf(s - row_max_new);
+        sh_S[row_in_q_tile * T + k] = p; // overwrite scores with P in max-shifted frame
+        tile_row_sumexp += p;
+      }
+
+      float row_sumexp_new = rescale_old * row_sumexp + tile_row_sumexp;
+
+      // -----------------------------------------------------------------------
+      // Step D: stream the numerator accumulator \tilde{O} in the same max frame.
       //
-      // At this point:
-      //   sP[tid, k] = exp(logit(token, col_k) - mi_new)   for k = 0..Bc-1
-      //   sV[k, d]   = V[col_k, d]                         for d = 0..D-1
+      // Tile contribution (for this query row) is:
+      //   pv[d] = sum_k P_{i,k} * V_k[d]
       //
-      // For this query row (this thread), the tile contributes:
-      //
-      //   pv[d] = sum_{k=0..Bc-1} sP[tid, k] * sV[k, d]
-      //
-      // i.e. take the length-Bc "probability row vector" sP[tid, :] and multiply it by the [Bc x D]
-      // value tile sV to produce a length-D vector pv.
-      //
-      // This is exactly the tile-local piece of (P @ V) for this row.
-      //
-      // We maintain a running numerator y in the same max-shifted frame (mi_new):
-      //
-      //   y_new[d] = alpha * y_old[d] + pv[d]
-      //
-      // where alpha rescales the previous numerator from the old max frame (mi) into the new frame
-      // (mi_new).
+      // Merge with the running accumulator (rescaling the old frame -> new frame):
+      //   O_accum_new[d] = rescale_old * O_accum_old[d] + pv[d]
+      // -----------------------------------------------------------------------
       for (int d = 0; d < D; ++d) {
         float pv = 0.0f;
-        for (int k = 0; k < Bc; ++k) {
-          pv += sP[tid * Bc + k] * sV[k * D + d];
+        for (int k = 0; k < T; ++k) {
+          pv += sh_S[row_in_q_tile * T + k] * sh_V[k * D + d];
         }
-        sY[tid * D + d] = alpha * sY[tid * D + d] + pv;
+        sh_O_accum[row_in_q_tile * D + d] = rescale_old * sh_O_accum[row_in_q_tile * D + d] + pv;
       }
 
-      mi = mi_new;
-      li = li_new;
-      // No syncthreads needed between tile_q iterations: we overwrite per-tile shared rows anyway.
+      // Commit streaming state for next K/V tile.
+      row_max = row_max_new;
+      row_sumexp = row_sumexp_new;
+
+      // No extra syncthreads needed here: next iteration overwrites sh_K/sh_V rows.
     }
 
-    // Write normalized output once: O = y / l. Follows the pattern of "dividing the accumulated
-    // numerator and denominator at the end" from:
-    // https://github.com/SethHWeidman/ai_computing/blob/master/03_streaming_softmax/03_softmax_dot_product_streaming_example.py
-    int o_base = (bh_index * N + token) * D;
+    // -------------------------------------------------------------------------
+    // Finalize this query row: O_i = O_accum_i / row_sumexp_i
+    // -------------------------------------------------------------------------
+    int o_base = (bh * N + q_row) * D;
+    float inv_row_sumexp = 1.0f / row_sumexp;
 
-    float inv_li = 1.0f / li;
     for (int d = 0; d < D; ++d) {
-      O[o_base + d] = sY[tid * D + d] * inv_li;
+      O[o_base + d] = sh_O_accum[row_in_q_tile * D + d] * inv_row_sumexp;
     }
 
-    int lm_idx = (bh_index * N + token);
-    m[lm_idx] = mi;
-    l[lm_idx] = li;
+    // https://github.com/SethHWeidman/ai_computing/blob/master/03_streaming_softmax/02_sum_of_exponentials_large_example.py
   }
+
+  // Write normalized output once: O = y / l. Follows the pattern of "dividing the accumulated
+  // numerator and denominator at the end" from:
+  // https://github.com/SethHWeidman/ai_computing/blob/master/03_streaming_softmax/03_softmax_dot_product_streaming_example.py
 }
 
 torch::Tensor flash_attn_v1(torch::Tensor q, torch::Tensor k, torch::Tensor v) {
@@ -219,27 +227,26 @@ torch::Tensor flash_attn_v1(torch::Tensor q, torch::Tensor k, torch::Tensor v) {
   TORCH_CHECK(N % 16 == 0, "flash_attn_v1 requires seq len N % 16 == 0");
 
   auto o = torch::zeros_like(q_contig);
-  auto l = torch::zeros({B, H, N}, q_contig.options());
-  auto m = torch::full({B, H, N}, -std::numeric_limits<float>::infinity(), q_contig.options());
 
-  constexpr int Br = 16;
-  constexpr int Bc = 16;
+  constexpr int T = 16;
 
-  dim3 block(Br, 1, 1);
-  // FA1-style: grid over (batch, head) only.
+  // One thread per row in the Q tile.
+  dim3 block(T, 1, 1);
+
+  // One block per (batch, head).
   dim3 grid(B, H, 1);
 
   float softmax_scale = 1.0f / std::sqrt(static_cast<float>(D));
-  size_t smem_bytes = (Br * D    // sQ
-                       + Bc * D  // sK
-                       + Bc * D  // sV
-                       + Br * Bc // sP
-                       + Br * D) // sY
+  size_t smem_bytes = (T * D    // sh_Q
+                       + T * D  // sh_K
+                       + T * D  // sh_V
+                       + T * T  // sh_S (scores/probs scratch)
+                       + T * D) // sh_O_accum (numerator accumulator)
                       * sizeof(float);
 
   flash_attn_v1_kernel<<<grid, block, smem_bytes, at::cuda::getDefaultCUDAStream()>>>(
       q_contig.data_ptr<float>(), k_contig.data_ptr<float>(), v_contig.data_ptr<float>(),
-      o.data_ptr<float>(), l.data_ptr<float>(), m.data_ptr<float>(), B, H, N, D, softmax_scale);
+      o.data_ptr<float>(), B, H, N, D, softmax_scale);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 
   return o;
