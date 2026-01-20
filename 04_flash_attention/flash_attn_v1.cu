@@ -138,19 +138,29 @@ __global__ void flash_attn_v1_kernel(const float *Q, const float *K, const float
       }
 
       // -----------------------------------------------------------------------
-      // Step C: streaming-softmax merge (this is the core FlashAttention trick).
+      // Step C: Streaming softmax-dot (denominator) for this query row, across K/V tiles.
       //
-      // Maintain row-wise running max m_i and running sum-exp l_i across tiles:
+      // We are computing the numerically-stable "sum of scaled exponentials" in a streaming way,
+      // exactly as in:
+      //   https://github.com/SethHWeidman/ai_computing/blob/master/03_streaming_softmax/02_sum_of_exponentials_large_example.py
       //
-      //   row_max_new = max(row_max_old, max_k S_{i,k})
-      //   rescale_old = exp(row_max_old - row_max_new)
+      // For this row i, maintain:
+      //   row_max    = m_i   (running max logit seen so far)
+      //   row_sumexp = l_i   (running denominator in the m_i frame)
       //
-      // Then compute this tile’s contributions in the NEW max frame:
+      // For the current tile we have logits S_{i,k} (k=0..T-1) and the tile max:
+      //   tile_row_max = max_k S_{i,k}.
       //
-      //   P_{i,k} = exp(S_{i,k} - row_max_new)   (0 if masked / -inf)
+      // Merge this tile into the running state:
+      //   row_max_new = max(row_max, tile_row_max)
+      //   rescale_old = exp(row_max - row_max_new)   // in (0,1], rescales old frame -> new frame
+      //
+      // Then compute the tile contributions directly in the new max frame:
+      //   P_{i,k} = exp(S_{i,k} - row_max_new)        // (0 if masked / -inf)
+      //   tile_row_sumexp = sum_k P_{i,k}
       //
       // Update denominator:
-      //   row_sumexp_new = rescale_old * row_sumexp_old + sum_k P_{i,k}
+      //   row_sumexp_new = rescale_old * row_sumexp + tile_row_sumexp
       // -----------------------------------------------------------------------
 
       float row_max_new = fmaxf(row_max, tile_row_max);
@@ -191,7 +201,15 @@ __global__ void flash_attn_v1_kernel(const float *Q, const float *K, const float
     }
 
     // -------------------------------------------------------------------------
-    // Finalize this query row: O_i = O_accum_i / row_sumexp_i
+    // Final normalization: O_i = numerator / denominator.
+    //
+    // This matches the "divide at the end" pattern in the streaming softmax-dot post:
+    //   https://github.com/SethHWeidman/ai_computing/blob/master/03_streaming_softmax/03_softmax_dot_product_streaming_example.py
+    //
+    // At this point:
+    //   sh_O_accum[row, :] is the fully accumulated numerator in the final row_max frame,
+    //   row_sumexp is the fully accumulated denominator in the same frame, so dividing yields the
+    //   exact softmax-weighted sum for this row.
     // -------------------------------------------------------------------------
     int o_base = (bh * N + q_row) * D;
     float inv_row_sumexp = 1.0f / row_sumexp;
@@ -199,13 +217,7 @@ __global__ void flash_attn_v1_kernel(const float *Q, const float *K, const float
     for (int d = 0; d < D; ++d) {
       O[o_base + d] = sh_O_accum[row_in_q_tile * D + d] * inv_row_sumexp;
     }
-
-    // https://github.com/SethHWeidman/ai_computing/blob/master/03_streaming_softmax/02_sum_of_exponentials_large_example.py
   }
-
-  // Write normalized output once: O = y / l. Follows the pattern of "dividing the accumulated
-  // numerator and denominator at the end" from:
-  // https://github.com/SethHWeidman/ai_computing/blob/master/03_streaming_softmax/03_softmax_dot_product_streaming_example.py
 }
 
 torch::Tensor flash_attn_v1(torch::Tensor q, torch::Tensor k, torch::Tensor v) {
