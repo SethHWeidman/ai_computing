@@ -33,10 +33,10 @@ static inline __host__ __device__ int ceil_div(int a, int b) { return (a + b - 1
 // -----------------------------------------------------------------------------
 __global__ void flash_attn_v1_kernel(const float *Q, const float *K, const float *V, float *O,
                                      int B, int H, int N, int D, float softmax_scale) {
-  // Tile sizes (both 16 here to mirror the diagrams / simplify the kernel).
 
-  // both rows in a Q tile (outer loop tile size) and rows in a K/V tile (inner loop tile size)
-  constexpr int T = 16;
+  // Tile sizes (both 16 here)
+  constexpr int Tr = 16; // rows in a Q tile (outer loop tile size)
+  constexpr int Tc = 16; // rows in a K/V tile (inner loop tile size)
 
   // Which (batch, head) slice does this block own?
   int batch = blockIdx.x;
@@ -60,19 +60,19 @@ __global__ void flash_attn_v1_kernel(const float *Q, const float *K, const float
   //   sh_O_accum [T, D]    running numerator accumulator (\tilde{O}) for this Q tile
   // ---------------------------------------------------------------------------
   extern __shared__ float smem[];
-  float *sh_Q = smem;               // T * D
-  float *sh_K = sh_Q + T * D;       // T * D
-  float *sh_V = sh_K + T * D;       // T * D
-  float *sh_S = sh_V + T * D;       // T * T
-  float *sh_O_accum = sh_S + T * T; // T * D
+  float *sh_Q = smem;                 // sh_Q has size Tr * D
+  float *sh_K = sh_Q + Tr * D;        // sh_K has size Tc * D
+  float *sh_V = sh_K + Tc * D;        // sh_V has size Tc * D
+  float *sh_S = sh_V + Tc * D;        // sh_S has size Tc * Tr
+  float *sh_O_accum = sh_S + Tr * Tc; // T * D
 
-  int num_kv_tiles = ceil_div(N, T);
-  int num_q_tiles = ceil_div(N, T);
+  int num_kv_tiles = ceil_div(N, Tc);
+  int num_q_tiles = ceil_div(N, Tr);
 
   // Outer loop: iterate over Q tiles (and therefore output tiles).
   for (int q_tile_idx = 0; q_tile_idx < num_q_tiles; ++q_tile_idx) {
     // Global query row index (token position) owned by this thread in this tile.
-    int q_row = q_tile_idx * T + row_in_q_tile;
+    int q_row = q_tile_idx * Tr + row_in_q_tile;
     int q_base = (bh * N + q_row) * D;
 
     // Load this thread's Q row into shared (and zero its numerator accumulator row).
@@ -98,7 +98,7 @@ __global__ void flash_attn_v1_kernel(const float *Q, const float *K, const float
       // -----------------------------------------------------------------------
       // Step A: load K_tile and V_tile into shared (cooperative: one row per thread).
       // -----------------------------------------------------------------------
-      int kv_row = kv_tile_idx * T + row_in_q_tile; // global row in K/V this thread loads
+      int kv_row = kv_tile_idx * Tc + row_in_q_tile; // global row in K/V this thread loads
       int kv_base = (bh * N + kv_row) * D;
 
       for (int d = 0; d < D; ++d) {
@@ -117,8 +117,8 @@ __global__ void flash_attn_v1_kernel(const float *Q, const float *K, const float
       // -----------------------------------------------------------------------
       float tile_row_max = -CUDART_INF_F;
 
-      for (int k = 0; k < T; ++k) {
-        int col = kv_tile_idx * T + k; // global key position
+      for (int k = 0; k < Tc; ++k) {
+        int col = kv_tile_idx * Tc + k; // global key position
 
         float s = -CUDART_INF_F;
         if (col < N) {
@@ -133,7 +133,7 @@ __global__ void flash_attn_v1_kernel(const float *Q, const float *K, const float
           }
         }
 
-        sh_S[row_in_q_tile * T + k] = s;
+        sh_S[row_in_q_tile * Tc + k] = s;
         tile_row_max = fmaxf(tile_row_max, s);
       }
 
@@ -167,10 +167,10 @@ __global__ void flash_attn_v1_kernel(const float *Q, const float *K, const float
       float rescale_old = __expf(row_max - row_max_new);
 
       float tile_row_sumexp = 0.0f;
-      for (int k = 0; k < T; ++k) {
-        float s = sh_S[row_in_q_tile * T + k];
+      for (int k = 0; k < Tc; ++k) {
+        float s = sh_S[row_in_q_tile * Tc + k];
         float p = (s == -CUDART_INF_F) ? 0.0f : __expf(s - row_max_new);
-        sh_S[row_in_q_tile * T + k] = p; // overwrite scores with P in max-shifted frame
+        sh_S[row_in_q_tile * Tc + k] = p; // overwrite scores with P in max-shifted frame
         tile_row_sumexp += p;
       }
 
@@ -187,8 +187,8 @@ __global__ void flash_attn_v1_kernel(const float *Q, const float *K, const float
       // -----------------------------------------------------------------------
       for (int d = 0; d < D; ++d) {
         float pv = 0.0f;
-        for (int k = 0; k < T; ++k) {
-          pv += sh_S[row_in_q_tile * T + k] * sh_V[k * D + d];
+        for (int k = 0; k < Tc; ++k) {
+          pv += sh_S[row_in_q_tile * Tc + k] * sh_V[k * D + d];
         }
         sh_O_accum[row_in_q_tile * D + d] = rescale_old * sh_O_accum[row_in_q_tile * D + d] + pv;
       }
