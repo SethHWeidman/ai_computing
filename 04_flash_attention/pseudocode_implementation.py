@@ -6,7 +6,6 @@ def flash_attn_v1_kernel_py(
     Q: torch.Tensor,  # [N, D]
     K: torch.Tensor,  # [N, D]
     V: torch.Tensor,  # [N, D]
-    softmax_scale: float,
     Tr: int = 16,  # rows in a Q tile (outer loop tile size)
     Tc: int = 16,  # rows in a K/V tile (inner loop tile size)
 ) -> torch.Tensor:
@@ -33,6 +32,8 @@ def flash_attn_v1_kernel_py(
     # Enforce exact tiling like the CUDA kernel (no ragged tiles).
     assert N % Tr == 0, f"N={N} must be a multiple of Tr={Tr}"
     assert N % Tc == 0, f"N={N} must be a multiple of Tc={Tc}"
+
+    softmax_scale = 1 / math.sqrt(D)
 
     num_q_tiles = N // Tr
     num_kv_tiles = N // Tc
@@ -88,14 +89,14 @@ def flash_attn_v1_kernel_py(
 
                 for k in range(Tc):
                     # global key position
-                    col = kv_tile_row0 + k
+                    k_col = kv_tile_row0 + k
 
                     s = neg_inf
-                    masked = col > q_row  # causal mask
+                    masked = k_col > q_row  # causal mask
                     if not masked:
                         acc = 0.0
                         for d in range(D):
-                            acc += float(sh_Q[row_in_q_tile, d]) * float(sh_K[k, d])
+                            acc += sh_Q[row_in_q_tile, d] * sh_K[k, d]
                         s = acc * softmax_scale
 
                     sh_S[row_in_q_tile, k] = s
@@ -104,7 +105,8 @@ def flash_attn_v1_kernel_py(
 
                 tile_row_max[row_in_q_tile] = rmax
 
-            # Step C + D: for each row, merge streaming max/sumexp and update numerator accumulator.
+            # Step C + D: for each row, merge streaming max/sumexp and update numerator
+            # accumulator.
             for row_in_q_tile in range(Tr):
                 # Merge max frames
                 rm = row_max[row_in_q_tile]
@@ -117,8 +119,8 @@ def flash_attn_v1_kernel_py(
                 # Convert scores -> probs in the new max frame (overwrite sh_S in place)
                 tile_sumexp = 0.0
                 for k in range(Tc):
-                    s = float(sh_S[row_in_q_tile, k])
-                    if s == neg_inf:
+                    s = sh_S[row_in_q_tile, k]
+                    if s == neg_inf:  # s was masked out
                         p = 0.0
                     else:
                         p = math.exp(s - row_max_new)
@@ -127,15 +129,15 @@ def flash_attn_v1_kernel_py(
 
                 row_sumexp_new = rescale_old * row_sumexp[row_in_q_tile] + tile_sumexp
 
-                # Step D: pv[d] = sum_k P_{i,k} * V_k[d]
+                # Step D: dot product of sh_S with  pv[d] = sum_k P_{i,k} * V_k[d]
                 # and merge numerator accumulator in the same frame:
                 #   O_accum_new[d] = rescale_old * O_accum_old[d] + pv[d]
                 for d in range(D):
                     pv = 0.0
                     for k in range(Tc):
-                        pv += float(sh_S[row_in_q_tile, k]) * float(sh_V[k, d])
+                        pv += sh_S[row_in_q_tile, k] * sh_V[k, d]
                     sh_O_accum[row_in_q_tile, d] = (
-                        rescale_old * float(sh_O_accum[row_in_q_tile, d]) + pv
+                        rescale_old * sh_O_accum[row_in_q_tile, d] + pv
                     )
 
                 # Commit streaming state
@@ -147,15 +149,22 @@ def flash_attn_v1_kernel_py(
             q_row = q_tile_row0 + row_in_q_tile
             inv = 1.0 / row_sumexp[row_in_q_tile]
             for d in range(D):
-                O[q_row, d] = float(sh_O_accum[row_in_q_tile, d]) * inv
+                O[q_row, d] = sh_O_accum[row_in_q_tile, d] * inv
 
     return O
 
 
-def naive_attention_py(Q, K, V, softmax_scale, causal=True):
-    S = (Q @ K.T) * softmax_scale
+def naive_attention_py(
+    Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=True
+) -> torch.Tensor:
+    N, D = Q.shape
+
+    softmax_scale = 1 / math.sqrt(D)
+
+    S = Q @ K.T * softmax_scale
     if causal:
         N = Q.shape[0]
+        # https://docs.pytorch.org/docs/stable/generated/torch.triu.html
         mask = torch.triu(
             torch.ones((N, N), dtype=torch.bool, device=Q.device), diagonal=1
         )
@@ -165,7 +174,7 @@ def naive_attention_py(Q, K, V, softmax_scale, causal=True):
 
 
 if __name__ == "__main__":
-    torch.manual_seed(0)
+    torch.manual_seed(260120)
     N, D = 64, 32
     Tr, Tc = 16, 16
     Q = torch.randn(N, D)
@@ -173,7 +182,12 @@ if __name__ == "__main__":
     V = torch.randn(N, D)
     scale = 1.0 / math.sqrt(D)
 
-    O_ref = naive_attention_py(Q, K, V, scale, causal=True)
-    O_fa = flash_attn_v1_kernel_py(Q, K, V, scale, Tr=Tr, Tc=Tc)
+    O_ref = naive_attention_py(Q, K, V, causal=True)
+    O_fa = flash_attn_v1_kernel_py(Q, K, V, Tr=Tr, Tc=Tc)
 
-    print("max abs diff:", (O_ref - O_fa).abs().max().item())
+    diff = (O_ref - O_fa).abs().max().item()
+    print("max abs diff:", diff)
+    if diff < 1e-6:
+        print(
+            "Pseudocode FlashAttention implementation matches standard attention implementation"
+        )
