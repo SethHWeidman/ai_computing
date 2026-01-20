@@ -54,21 +54,19 @@ def flash_attn_v1_kernel_py(
     for q_tile_idx in range(num_q_tiles):
         q_tile_row0 = q_tile_idx * Tr
 
-        # Load Q tile and zero numerator accumulator (like CUDA: each thread loads one row).
+        # Load Q tile and zero numerator accumulator
         for row_in_q_tile in range(Tr):
             q_row = q_tile_row0 + row_in_q_tile  # global query row
             for d in range(D):
                 sh_Q[row_in_q_tile, d] = Q[q_row, d]
                 sh_O_accum[row_in_q_tile, d] = 0.0
 
-        # Per-row streaming-softmax state (kept "in registers" conceptually).
+        # Per-row streaming-softmax state
         row_max = [neg_inf] * Tr
         row_sumexp = [0.0] * Tr
 
         # Causal pruning: skip KV tiles strictly in the future.
         kv_tile_max = q_tile_idx
-        # if kv_tile_max > (num_kv_tiles - 1):
-        #     kv_tile_max = num_kv_tiles - 1
 
         # Inner loop: stream over K/V tiles up to causal boundary.
         for kv_tile_idx in range(kv_tile_max + 1):
@@ -111,7 +109,7 @@ def flash_attn_v1_kernel_py(
                 # Merge max frames
                 rm = row_max[row_in_q_tile]
                 tm = tile_row_max[row_in_q_tile]
-                row_max_new = rm if rm > tm else tm
+                row_max_new = max(rm, tm)
 
                 # rescale old frame -> new frame
                 rescale_old = math.exp(rm - row_max_new) if rm != neg_inf else 0.0
