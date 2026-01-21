@@ -10,20 +10,12 @@ def flash_attn_v1_kernel_py(
     Tc: int = 16,  # rows in a K/V tile (inner loop tile size)
 ) -> torch.Tensor:
     """
-    “Whiteboard-aligned” Python reference that mirrors the CUDA teaching kernel’s control flow
-    and state updates (float, causal). Single (batch, head) slice only: Q/K/V are [N, D].
+    Python reference implementation that mirrors the CUDA kernel:
 
-    Assumptions (checked):
-      - N is a multiple of Tr and Tc (so we do *not* need ragged tiles).
-      - causal attention (lower-triangular).
-
-    This mimics the CUDA kernel structure:
-      - outer loop over q_tile_idx
-      - per-row streaming state: row_max (m_i), row_sumexp (l_i)
-      - inner loop over kv_tile_idx (up to causal boundary)
-      - explicit loops for dot products / pv accumulation
-      - masking handled like CUDA: `masked = (col > q_row)` with s=-inf and p=0
-      - sh_S is overwritten in-place from scores -> exp(scores - row_max_new)
+      * Operates on a single (batch, head) slice only: Q/K/V are [N, D].
+      * Outer loop over q_tile_idx, inner loop over kv_tile_idx (up to causal boundary)
+      * Same variable naming `Tr`, `Tc`, etc.
+      * Loops written out explicitly
     """
     assert Q.dim() == 2 and K.dim() == 2 and V.dim() == 2, "Q, K, V must be 2D"
     N, D = Q.shape
@@ -34,9 +26,6 @@ def flash_attn_v1_kernel_py(
     assert N % Tc == 0, f"N={N} must be a multiple of Tc={Tc}"
 
     softmax_scale = 1 / math.sqrt(D)
-
-    num_q_tiles = N // Tr
-    num_kv_tiles = N // Tc
 
     O = torch.empty((N, D), dtype=Q.dtype)
 
@@ -51,7 +40,7 @@ def flash_attn_v1_kernel_py(
     sh_O_accum = torch.empty((Tr, D), dtype=Q.dtype)
 
     # Outer loop: iterate over Q tiles.
-    for q_tile_idx in range(num_q_tiles):
+    for q_tile_idx in range(N // Tr):
         q_tile_row0 = q_tile_idx * Tr
 
         # Load Q tile and zero numerator accumulator
@@ -153,7 +142,7 @@ def flash_attn_v1_kernel_py(
 
 
 def naive_attention_py(
-    Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=True
+    Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal: bool = True
 ) -> torch.Tensor:
     N, D = Q.shape
 
@@ -180,12 +169,13 @@ if __name__ == "__main__":
     V = torch.randn(N, D)
     scale = 1.0 / math.sqrt(D)
 
-    O_ref = naive_attention_py(Q, K, V, causal=True)
-    O_fa = flash_attn_v1_kernel_py(Q, K, V, Tr=Tr, Tc=Tc)
+    O_ref = naive_attention_py(Q, K, V)
+    O_fa = flash_attn_v1_kernel_py(Q, K, V)
 
     diff = (O_ref - O_fa).abs().max().item()
     print("max abs diff:", diff)
     if diff < 1e-6:
         print(
-            "Pseudocode FlashAttention implementation matches standard attention implementation"
+            "Pseudocode FlashAttention implementation matches standard attention "
+            "implementation"
         )
