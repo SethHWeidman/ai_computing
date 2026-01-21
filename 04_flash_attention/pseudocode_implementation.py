@@ -152,9 +152,7 @@ def naive_attention_py(
     if causal:
         N = Q.shape[0]
         # https://docs.pytorch.org/docs/stable/generated/torch.triu.html
-        mask = torch.triu(
-            torch.ones((N, N), dtype=torch.bool, device=Q.device), diagonal=1
-        )
+        mask = torch.triu(torch.ones((N, N), dtype=torch.bool), diagonal=1)
         S = S.masked_fill(mask, -float("inf"))
     P = torch.softmax(S, dim=-1)
     return P @ V
