@@ -32,12 +32,12 @@ def flash_attn_v1_kernel_py(
     neg_inf = -float("inf")
 
     # Shared-memory analogs (allocated once; overwritten each tile).
-    sh_Q = torch.empty((Tr, D), dtype=Q.dtype)
-    sh_K = torch.empty((Tc, D), dtype=Q.dtype)
-    sh_V = torch.empty((Tc, D), dtype=Q.dtype)
+    Q_tile = torch.empty((Tr, D), dtype=Q.dtype)
+    K_tile = torch.empty((Tc, D), dtype=Q.dtype)
+    V_tile = torch.empty((Tc, D), dtype=Q.dtype)
     sh_S = torch.empty((Tr, Tc), dtype=Q.dtype)  # scores/probs scratch
     # numerator accumulator for current Q tile
-    sh_O_accum = torch.empty((Tr, D), dtype=Q.dtype)
+    O_tile_accum = torch.empty((Tr, D), dtype=Q.dtype)
 
     # Outer loop: iterate over Q tiles.
     for q_tile_idx in range(N // Tr):
@@ -47,8 +47,8 @@ def flash_attn_v1_kernel_py(
         for row_in_q_tile in range(Tr):
             q_row = q_tile_row0 + row_in_q_tile  # global query row
             for d in range(D):
-                sh_Q[row_in_q_tile, d] = Q[q_row, d]
-                sh_O_accum[row_in_q_tile, d] = 0.0
+                Q_tile[row_in_q_tile, d] = Q[q_row, d]
+                O_tile_accum[row_in_q_tile, d] = 0.0
 
         # Per-row streaming-softmax state
         row_max = [neg_inf] * Tr
@@ -65,8 +65,8 @@ def flash_attn_v1_kernel_py(
             for row_in_kv_tile in range(Tc):
                 kv_row = kv_tile_row0 + row_in_kv_tile
                 for d in range(D):
-                    sh_K[row_in_kv_tile, d] = K[kv_row, d]
-                    sh_V[row_in_kv_tile, d] = V[kv_row, d]
+                    K_tile[row_in_kv_tile, d] = K[kv_row, d]
+                    V_tile[row_in_kv_tile, d] = V[kv_row, d]
 
             # Step B: compute scores sh_S[row_in_q_tile, k] and per-row tile_row_max
             tile_row_max = [neg_inf] * Tr
@@ -83,7 +83,7 @@ def flash_attn_v1_kernel_py(
                     if not masked:
                         acc = 0.0
                         for d in range(D):
-                            acc += sh_Q[row_in_q_tile, d] * sh_K[k, d]
+                            acc += Q_tile[row_in_q_tile, d] * K_tile[k, d]
                         s = acc * softmax_scale
 
                     sh_S[row_in_q_tile, k] = s
@@ -122,9 +122,9 @@ def flash_attn_v1_kernel_py(
                 for d in range(D):
                     pv = 0.0
                     for k in range(Tc):
-                        pv += sh_S[row_in_q_tile, k] * sh_V[k, d]
-                    sh_O_accum[row_in_q_tile, d] = (
-                        rescale_old * sh_O_accum[row_in_q_tile, d] + pv
+                        pv += sh_S[row_in_q_tile, k] * V_tile[k, d]
+                    O_tile_accum[row_in_q_tile, d] = (
+                        rescale_old * O_tile_accum[row_in_q_tile, d] + pv
                     )
 
                 # Commit streaming state
@@ -136,7 +136,7 @@ def flash_attn_v1_kernel_py(
             q_row = q_tile_row0 + row_in_q_tile
             inv = 1.0 / row_sumexp[row_in_q_tile]
             for d in range(D):
-                O[q_row, d] = sh_O_accum[row_in_q_tile, d] * inv
+                O[q_row, d] = O_tile_accum[row_in_q_tile, d] * inv
 
     return O
 
