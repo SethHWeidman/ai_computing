@@ -58,6 +58,14 @@ streaming fashion, processing data in small blocks rather than all at once. This
 is used to save memory in FlashAttention and similar algorithms. See
 [`03_streaming_softmax/README.md`](03_streaming_softmax/README.md) for full details.
 
+## `06_nvfp4`
+
+A manual Python implementation of NVIDIA's NVFP4 quantization format: FP4 E2M1 weights
+scaled by per-block FP8 E4M3 scales and a single global FP32 tensor scale. Includes
+step-by-step walkthroughs of the internal helper functions and notes on the full
+quantization/dequantization pipeline. See [`06_nvfp4/README.md`](06_nvfp4/README.md) for
+full details.
+
 ## LLMs-from-scratch references
 
 This repo contains a few adapted scripts and demos based on Sebastian Raschka's excellent
