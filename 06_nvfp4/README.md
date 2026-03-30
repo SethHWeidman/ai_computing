@@ -5,14 +5,16 @@ per-block FP8 E4M3 scales and a global FP32 tensor scale.
 
 ## How to run
 
+### nvfp4.py
+
+The main module. Quantizes a hand-crafted 4×16 tensor whose four rows span four orders
+of magnitude, so each block gets a visibly different E4M3 scale. Prints the tensor
+scale, per-block scales, quantized payload values, and reconstruction.
+
 ```bash
 cd 06_nvfp4
 python nvfp4.py
 ```
-
-Quantizes a hand-crafted 4×16 tensor whose four rows span four orders of magnitude, so
-each block gets a visibly different E4M3 scale. Prints the tensor scale, per-block
-scales, quantized payload values, and reconstruction.
 
 ```
 tensor_scale_fp32 = 5.3760
@@ -55,12 +57,14 @@ dequantized_fp32:
         333.333  -500.000   166.667  -250.000   333.333  -500.000   250.000  -333.333
 ```
 
-```bash
-python codebook.py
-```
+### codebook.py
 
 Walks through the three codebook functions step by step, showing concrete inputs and
 outputs for each.
+
+```bash
+python codebook.py
+```
 
 ## Files
 
