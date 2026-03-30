@@ -219,8 +219,3 @@ if __name__ == "__main__":
     print()
     helpers.print_tensor("dequantized_fp32:", out["dequantized_fp32"])
     print()
-
-    mse = torch.mean((x - out["dequantized_fp32"]) ** 2)
-    rel_err = (x - out["dequantized_fp32"]).abs() / x.abs().clamp(min=1e-6)
-    print(f"MSE = {mse.item():.2f}")
-    print(f"mean relative error = {rel_err.mean().item():.4f}")
