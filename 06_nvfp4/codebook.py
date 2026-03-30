@@ -140,7 +140,7 @@ if __name__ == "__main__":
     print(f"  {len(e4_vals)} representable positive values (including 0), sorted")
     print()
 
-    def show_slice(label, vals, codes):
+    def _show_slice(label: str, vals: torch.Tensor, codes: torch.Tensor) -> None:
         print(f"  {label}:")
         print(f"    {'code (hex)':>10}  {'exp':>4}  {'mant':>4}  {'value':>12}")
         for code, val in zip(codes.tolist(), vals.tolist()):
@@ -151,9 +151,9 @@ if __name__ == "__main__":
                 f"val={val:>12.6f}"
             )
 
-    show_slice("first 8 (near zero)", e4_vals[:8], e4_codes[:8])
+    _show_slice("first 8 (near zero)", e4_vals[:8], e4_codes[:8])
     print()
-    show_slice("last 8 (near max 448)", e4_vals[-8:], e4_codes[-8:])
+    _show_slice("last 8 (near max 448)", e4_vals[-8:], e4_codes[-8:])
     print()
     print(f"  Min value: {e4_vals[0].item():.2e}")
     print(f"  Max value: {e4_vals[-1].item():.1f}  (= 1.875 * 2^8 = 448)")
