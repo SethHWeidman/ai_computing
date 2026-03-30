@@ -4,7 +4,10 @@ import torch
 from torch.nn import functional
 
 BLOCK_SIZE: int = 16
+# largest finite E2M1 value: (1 + 1/2) * 2^(3-1) = 1.5 * 4; see max_values.md
 FP4_MAX: float = 6.0
+# largest finite E4M3 value: (1 + 6/8) * 2^(15-7) = 1.75 * 256; exp=1111/mant=111
+# reserved for NaN
 E4M3_MAX: float = 448.0
 
 
@@ -196,8 +199,8 @@ def quantize_nvfp4(x: torch.Tensor) -> dict[str, torch.Tensor]:
     payload_vals = torch.where(signs.bool(), -q_abs_vals, q_abs_vals)
 
     # Dequantize: reverse the two scaling steps.
-    dequant_scaled = payload_vals * scale_expanded
-    dequant = dequant_scaled / tensor_scale_t
+    dequant_scaled = payload_vals * scale_expanded  # block scale
+    dequant = dequant_scaled / tensor_scale_t  # tensor scale
 
     # Trim padding back to the original shape.
     payload_vals = payload_vals.reshape(*x_scaled.shape[:-1], -1)[..., :original_last]

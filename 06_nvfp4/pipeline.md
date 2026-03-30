@@ -89,6 +89,18 @@ where `tensor_scale` here is `1 / encode_scale = amax(x) / 2688.0`.
 Note: in the code, `tensor_scale_t` is the *encode* scale (`2688 / amax`), so
 dequantization divides by it: `x̂ = payload_vals × block_scale / tensor_scale_t`.
 
+**How the block scale is broadcast back over 16 elements** — after quantization,
+`block_scale` has shape `(..., nblocks)`: one scalar per block. To multiply it against
+`payload_vals` which has shape `(..., nblocks, 16)`, the code does `scale_expanded =
+block_scale.unsqueeze(-1)` ([nvfp4.py:186](nvfp4.py#L186)), giving shape `(..., nblocks,
+1)`. PyTorch then broadcasts that singleton dimension across all 16 positions in the last
+axis. The two dequant lines ([nvfp4.py:199-200](nvfp4.py#L199)) are therefore:
+
+```python
+dequant_scaled = payload_vals * scale_expanded   # applies block scale to each element
+dequant        = dequant_scaled / tensor_scale_t  # removes the global tensor scale
+```
+
 ---
 
 ## In cuBLAS matmuls
