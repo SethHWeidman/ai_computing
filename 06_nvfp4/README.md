@@ -67,12 +67,15 @@ and outputs for each.
 
 ## Files
 
-- `nvfp4.py` — the quantizer. Key functions:
-  - `_positive_e2m1_codebook` — the 8 positive FP4 E2M1 representable values and their 4-bit codes
-  - `_positive_e4m3fn_codebook` — the 127 positive FP8 E4M3 representable values and their codes (used for block scales)
-  - `_nearest_codebook_quantize_nonnegative` — snaps a nonneg tensor to the nearest codebook entry via `torch.searchsorted`
-  - `pack_nibbles` — packs two FP4 codes per byte (first → low nibble, second → high nibble)
-  - `quantize_nvfp4` — the full pipeline: tensor scale → block scales → FP4 quantization → nibble packing
-- `show_helpers.py` — illustrated walkthroughs of the three helper functions above
-- `pipeline.md` — explains the full quantization and dequantization pipeline, including how the three scaling levels (FP32, FP8, FP4) relate and how cuBLAS applies them during a matmul
-- `pack_nibbles.md` — explains why nibble packing is necessary and what the term "nibble" means
+- `nvfp4.py` — `quantize_nvfp4`: the full pipeline (tensor scale → block scales → FP4
+  quantization → nibble packing)
+- `codebook.py` — codebook builders and quantizer: `positive_e2m1_codebook`,
+  `positive_e4m3fn_codebook`, `nearest_codebook_quantize_nonnegative`. Run directly for
+  illustrated walkthroughs of each function.
+- `nibbles.py` — `pack_nibbles`: packs two FP4 codes per byte (first → low nibble,
+  second → high nibble). Run directly for worked examples.
+- `pipeline.md` — explains the full quantization and dequantization pipeline, including
+  how the three scaling levels (FP32, FP8, FP4) relate and how cuBLAS applies them during
+  a matmul
+- `pack_nibbles.md` — explains why nibble packing is necessary and what the term "nibble"
+  means
