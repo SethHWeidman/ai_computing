@@ -3,11 +3,14 @@ import warnings
 import torch
 from torch.nn import functional
 
+import print_helpers
+
 BLOCK_SIZE: int = 16
-# largest finite E2M1 value: (1 + 1/2) * 2^(3-1) = 1.5 * 4; see max_values.md
+# largest finite E2M1 value: (1 + 1/2) * 2^(3-1) = 1.5 * 4
+# see max_values.md
 FP4_MAX: float = 6.0
-# largest finite E4M3 value: (1 + 6/8) * 2^(15-7) = 1.75 * 256; exp=1111/mant=111
-# reserved for NaN
+# largest finite E4M3 value: (1 + 6/8) * 2^(15-7) = 1.75 * 256
+# exp=1111/mant=111 reserved for NaN
 E4M3_MAX: float = 448.0
 
 
@@ -305,7 +308,7 @@ if __name__ == "__main__":
 
     out = quantize_nvfp4(x)
 
-    print(f"tensor_scale_fp32 = {out['tensor_scale_fp32'].item():.6f}")
+    print(f"tensor_scale_fp32 = {out['tensor_scale_fp32'].item():.4f}")
     print(f"  (= 6 × 448 / amax(x) = 2688 / {x.abs().max().item():.1f})")
     print()
 
@@ -315,15 +318,19 @@ if __name__ == "__main__":
         print(f"  row {i}: {s:.4f}   (row amax = {amax_row:.2f})")
     print()
 
-    print("payload_e2m1_values (quantized, shape 4×16):")
-    print(out["payload_e2m1_values"])
+    print_helpers.print_tensor(
+        "payload_e2m1_values (quantized, shape 4×16):",
+        out["payload_e2m1_values"],
+        fmt="{:5.2f}",
+    )
     print()
 
-    print("dequantized_fp32:")
-    print(out["dequantized_fp32"])
+    print_helpers.print_tensor("original:", x)
+    print()
+    print_helpers.print_tensor("dequantized_fp32:", out["dequantized_fp32"])
     print()
 
     mse = torch.mean((x - out["dequantized_fp32"]) ** 2)
     rel_err = (x - out["dequantized_fp32"]).abs() / x.abs().clamp(min=1e-6)
-    print(f"MSE = {mse.item():.6f}")
+    print(f"MSE = {mse.item():.2f}")
     print(f"mean relative error = {rel_err.mean().item():.4f}")
