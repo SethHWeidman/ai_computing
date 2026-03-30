@@ -3,7 +3,8 @@ import warnings
 import torch
 from torch.nn import functional
 
-import print_helpers
+import codebook
+import helpers
 
 BLOCK_SIZE: int = 16
 # largest finite E2M1 value: (1 + 1/2) * 2^(3-1) = 1.5 * 4
@@ -12,117 +13,6 @@ FP4_MAX: float = 6.0
 # largest finite E4M3 value: (1 + 6/8) * 2^(15-7) = 1.75 * 256
 # exp=1111/mant=111 reserved for NaN
 E4M3_MAX: float = 448.0
-
-
-# ----------------------------
-# Codebooks for the public formats
-# ----------------------------
-
-
-def _positive_e2m1_codebook() -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Positive finite FP4 E2M1 values inferred from NVIDIA's public description:
-    sign bit + 2 exponent bits + 1 mantissa bit, max magnitude 6.
-    Positive values are:
-      0, 0.5, 1, 1.5, 2, 3, 4, 6
-    Codes returned here are the positive 4-bit payload codes without the sign bit.
-    """
-    vals = []
-    codes = []
-
-    for exp in range(4):  # 2 exponent bits
-        for mant in range(2):  # 1 mantissa bit
-            code = (exp << 1) | mant  # sign bit gets added later
-
-            if exp == 0:
-                # subnormal / zero, bias = 1
-                val = mant / 2.0
-            else:
-                val = (1.0 + mant / 2.0) * (2.0 ** (exp - 1))
-
-            vals.append(val)
-            codes.append(code)
-
-    return (
-        torch.tensor(vals, dtype=torch.float32),
-        torch.tensor(codes, dtype=torch.uint8),
-    )
-
-
-def _positive_e4m3fn_codebook() -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Positive finite FP8 E4M3 values for the scale factors.
-
-    Public NVIDIA docs say E4M3 stores finite values up to +/-448 and nan.
-    This implementation uses the usual E4M3 finite-no-inf interpretation:
-      - bias = 7
-      - exp=0 => subnormals
-      - exp=15, mant=7 reserved as NaN
-    """
-    vals = []
-    codes = []
-
-    for exp in range(16):  # 4 exponent bits
-        for mant in range(8):  # 3 mantissa bits
-            if exp == 15 and mant == 7:
-                continue  # reserve NaN
-
-            code = (exp << 3) | mant  # positive sign
-            if exp == 0:
-                val = (mant / 8.0) * (2.0 ** (1 - 7))
-            else:
-                val = (1.0 + mant / 8.0) * (2.0 ** (exp - 7))
-
-            vals.append(val)
-            codes.append(code)
-
-    vals = torch.tensor(vals, dtype=torch.float32)
-    codes = torch.tensor(codes, dtype=torch.uint8)
-
-    vals, order = torch.sort(vals)
-    codes = codes[order]
-    return vals, codes
-
-
-def _nearest_codebook_quantize_nonnegative(
-    x: torch.Tensor, codebook_vals: torch.Tensor, codebook_codes: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Quantize nonnegative x to nearest representable codebook value.
-    Ties go to the lower-magnitude neighbor.
-    """
-    flat = x.reshape(-1)
-
-    idx = torch.searchsorted(codebook_vals, flat)
-    idx_lo = torch.clamp(idx - 1, 0, len(codebook_vals) - 1)
-    idx_hi = torch.clamp(idx, 0, len(codebook_vals) - 1)
-
-    v_lo = codebook_vals[idx_lo]
-    v_hi = codebook_vals[idx_hi]
-
-    use_hi = (flat - v_hi).abs() < (flat - v_lo).abs()
-    best = torch.where(use_hi, idx_hi, idx_lo)
-
-    return (codebook_vals[best].reshape_as(x), codebook_codes[best].reshape_as(x))
-
-
-def pack_nibbles(payload_codes_fp4: torch.Tensor) -> torch.Tensor:
-    """
-    Packs 4-bit payload codes into bytes.
-    Convention used here:
-      - first FP4 value goes in low nibble
-      - second FP4 value goes in high nibble
-    This packing convention is a host-side convenience, not a claim about
-    NVIDIA library internal storage layout.
-    """
-    flat = payload_codes_fp4.reshape(-1).to(torch.uint8)
-
-    if flat.numel() % 2:
-        flat = torch.cat([flat, torch.zeros(1, dtype=torch.uint8)], dim=0)
-
-    lo = flat[0::2] & 0x0F
-    hi = (flat[1::2] & 0x0F) << 4
-    return lo | hi
 
 
 # ----------------------------
@@ -153,8 +43,8 @@ def quantize_nvfp4(x: torch.Tensor) -> dict[str, torch.Tensor]:
         )
         x = x.float()
 
-    e2_vals, e2_codes = _positive_e2m1_codebook()
-    e4_vals, e4_codes = _positive_e4m3fn_codebook()
+    e2_vals, e2_codes = codebook.positive_e2m1_codebook()
+    e4_vals, e4_codes = codebook.positive_e4m3fn_codebook()
 
     # Scale the whole tensor so its global max maps to FP4_MAX * E4M3_MAX.
     # That leaves room for the per-block E4M3 scale to absorb local variation.
@@ -177,7 +67,7 @@ def quantize_nvfp4(x: torch.Tensor) -> dict[str, torch.Tensor]:
     # snap it to the nearest representable E4M3 value.
     block_amax = xb.abs().amax(dim=-1)
     ideal_block_scale = block_amax / FP4_MAX
-    block_scale, block_scale_codes = _nearest_codebook_quantize_nonnegative(
+    block_scale, block_scale_codes = codebook.nearest_codebook_quantize_nonnegative(
         ideal_block_scale, e4_vals, e4_codes
     )
 
@@ -196,7 +86,7 @@ def quantize_nvfp4(x: torch.Tensor) -> dict[str, torch.Tensor]:
 
     # The E2M1 codebook is positive-only, so handle sign separately.
     signs = (normalized < 0).to(torch.uint8)
-    q_abs_vals, _ = _nearest_codebook_quantize_nonnegative(
+    q_abs_vals, _ = codebook.nearest_codebook_quantize_nonnegative(
         normalized.abs(), e2_vals, e2_codes
     )
     payload_vals = torch.where(signs.bool(), -q_abs_vals, q_abs_vals)
@@ -318,16 +208,16 @@ if __name__ == "__main__":
         print(f"  row {i}: {s:.4f}   (row amax = {amax_row:.2f})")
     print()
 
-    print_helpers.print_tensor(
+    helpers.print_tensor(
         "payload_e2m1_values (quantized, shape 4×16):",
         out["payload_e2m1_values"],
         fmt="{:5.2f}",
     )
     print()
 
-    print_helpers.print_tensor("original:", x)
+    helpers.print_tensor("original:", x)
     print()
-    print_helpers.print_tensor("dequantized_fp32:", out["dequantized_fp32"])
+    helpers.print_tensor("dequantized_fp32:", out["dequantized_fp32"])
     print()
 
     mse = torch.mean((x - out["dequantized_fp32"]) ** 2)
