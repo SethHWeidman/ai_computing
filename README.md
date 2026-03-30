@@ -65,11 +65,11 @@ introduced with the Blackwell GPU architecture.
 
 NVFP4 uses three nested scales to represent weights:
 
-1. **FP4 E2M1 payload** — each weight is stored in 4 bits (two per byte via nibble
+1. **FP4 E2M1 payload**: each weight is stored in 4 bits (two per byte via nibble
    packing), with only 8 representable magnitudes: `0, 0.5, 1, 1.5, 2, 3, 4, 6`.
-2. **FP8 E4M3 block scale** — one per block of 16 weights, absorbs local magnitude
+2. **FP8 E4M3 block scale**: one per block of 16 weights, absorbs local magnitude
    variation; representable range ~0 to 448.
-3. **FP32 tensor scale** — a single global scalar that maps the tensor's overall
+3. **FP32 tensor scale**: a single global scalar that maps the tensor's overall
    magnitude into the range the block scales can cover.
 
 The implementation is pure Python/PyTorch with no CUDA kernels. See
