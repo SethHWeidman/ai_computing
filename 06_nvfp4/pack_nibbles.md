@@ -2,16 +2,15 @@
 
 ## On the term "nibble"
 
-Yes — standard CS terminology. A *nibble* (sometimes spelled *nybble*) is a 4-bit unit of
-data, i.e. half a byte. The term has been in wide use since the 1970s, appears in
-processor and networking documentation, and is used by NVIDIA in their cuBLAS 12.9
-release notes when describing the FP4 packing layout.
+A *nibble* (sometimes *nybble*) is a 4-bit unit of data, i.e. half a byte. Standard CS
+terminology since the 1970s; NVIDIA uses it in the cuBLAS 12.9 release notes when
+describing the FP4 packing layout.
 
 ## The problem
 
-NVFP4 represents each value as a 4-bit code. But memory is byte-addressed — there is no
-way to write a single nibble to RAM. Without packing, you'd have to store each 4-bit code
-in its own byte, wasting the upper 4 bits and defeating the point of going to FP4.
+NVFP4 represents each value as a 4-bit code, but memory is byte-addressed — there is no
+way to write a single nibble to RAM. Without packing, each 4-bit code would occupy its
+own byte, wasting the upper 4 bits and defeating the point of FP4.
 
 ## What it does
 
@@ -24,8 +23,8 @@ byte = (code[1] << 4) | code[0]
         (bits 7:4)       (bits 3:0)
 ```
 
-A tensor that was 4096 FP4 codes becomes 2048 bytes — exactly the 2× storage saving you'd
-expect from halving the bit width.
+A tensor of 4096 FP4 codes becomes 2048 bytes — the 2× storage saving you'd expect from
+halving the bit width.
 
 ## Where it sits in the quantization pipeline
 
@@ -39,8 +38,8 @@ x (FP32)
 ```
 
 `pack_nibbles` is the last step: it converts the logical representation (one `uint8`
-tensor entry per FP4 code) into the packed byte stream that you'd actually hand to a
-kernel or serialize to disk.
+entry per FP4 code) into the packed byte stream you'd hand to a kernel or serialize to
+disk.
 
 ## The caveat in the code
 
@@ -50,6 +49,6 @@ The docstring notes:
 > internal storage layout."
 
 NVIDIA's cuBLAS/cuDNN kernels have their own internal layout for NVFP4 data. The
-low-nibble-first convention here is just a reasonable default for inspection and testing
-— if you were feeding this into an actual CUDA kernel you'd need to match whatever
-convention that kernel expects.
+low-nibble-first convention here is a reasonable default for inspection and testing — if
+you were feeding this into an actual CUDA kernel you'd need to match whatever convention
+that kernel expects.
