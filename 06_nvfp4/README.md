@@ -11,8 +11,8 @@ python nvfp4.py
 ```
 
 Quantizes a hand-crafted 4×16 tensor whose four rows span four orders of magnitude, so
-each block gets a visibly different E4M3 scale. Prints the tensor scale, per-block scales,
-quantized payload values, reconstruction, and error.
+each block gets a visibly different E4M3 scale. Prints the tensor scale, per-block
+scales, quantized payload values, and reconstruction.
 
 ```
 tensor_scale_fp32 = 5.3760
@@ -53,17 +53,14 @@ dequantized_fp32:
          32.738   -49.107    16.369   -24.554    32.738   -49.107    24.554   -32.738
   [3]    83.333  -166.667   333.333  -333.333   500.000   -83.333   166.667  -333.333
         333.333  -500.000   166.667  -250.000   333.333  -500.000   250.000  -333.333
-
-MSE = 271.987213
-mean relative error = 0.0940
 ```
 
 ```bash
-python show_helpers.py
+python codebook.py
 ```
 
-Walks through the three internal helper functions step by step, showing concrete inputs
-and outputs for each.
+Walks through the three codebook functions step by step, showing concrete inputs and
+outputs for each.
 
 ## Files
 
@@ -72,10 +69,8 @@ and outputs for each.
 - `codebook.py` — codebook builders and quantizer: `positive_e2m1_codebook`,
   `positive_e4m3fn_codebook`, `nearest_codebook_quantize_nonnegative`. Run directly for
   illustrated walkthroughs of each function.
-- `nibbles.py` — `pack_nibbles`: packs two FP4 codes per byte (first → low nibble,
-  second → high nibble). Run directly for worked examples.
+- `nibbles/` — `pack_nibbles`: packs two FP4 codes per byte (first → low nibble,
+  second → high nibble). Run `python nibbles/nibbles.py` for worked examples.
 - `pipeline.md` — explains the full quantization and dequantization pipeline, including
   how the three scaling levels (FP32, FP8, FP4) relate and how cuBLAS applies them during
   a matmul
-- `pack_nibbles.md` — explains why nibble packing is necessary and what the term "nibble"
-  means
