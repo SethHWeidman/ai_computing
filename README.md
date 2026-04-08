@@ -75,6 +75,15 @@ NVFP4 uses three nested scales to represent weights:
 The implementation is pure Python/PyTorch with no CUDA kernels. See
 [`06_nvfp4/README.md`](06_nvfp4/README.md) for full details.
 
+## `07_separate_vs_fused_epilogue`
+
+A toy NumPy illustration of how GEMM output quantization changes from Hopper to
+Blackwell. On Hopper, quantizing requires separate kernel launches after the matmul; on
+Blackwell, the epilogue fuses quantization directly into the GEMM kernel so each tile is
+quantized as soon as its accumulators are ready. See
+[`07_separate_vs_fused_epilogue/README.md`](07_separate_vs_fused_epilogue/README.md) for
+full details.
+
 ## LLMs-from-scratch references
 
 This repo contains a few adapted scripts and demos based on Sebastian Raschka's excellent
