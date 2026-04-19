@@ -1,13 +1,15 @@
 # Scale-factor swizzling for NVFP4 GEMM
 
-NVFP4 quantization produces a logical scale tensor: one FP8 E4M3 scale per block of 16
-elements, stored in plain row-major order as `scales[row, block]`. That is the natural
-representation, and it is what `nvfp4.py` in the parent directory computes.
+NVFP4 quantization requires storing a tensor with the blocks scales in memory, with one
+FP8 E4M3 scale per block of 16 elements. Naively, one might store them in row-major order
+as `scales[row, block]`. That is the natural representation, and it is what `nvfp4.py` in
+the parent directory computes.
 
-But real GEMM kernels on Blackwell don't read those scales in row-major order. cuBLASLt
-documents a **tiled, interleaved layout** so the kernel can fetch scales with coalesced
-memory accesses. The swizzle changes only the memory layout, not the quantized values or
-the scales themselves.
+GEMM kernels don't read memory row by row, so reading scales in row-major order during a
+matmul causes many small, scattered memory fetches, which is slow. Swizzling fixes this
+by storing the scales in memory in such a way that the kernel can read them in large,
+contiguous chunks. The scale values themselves don't change, only where each byte lives
+in memory.
 
 ## What swizzling is
 
