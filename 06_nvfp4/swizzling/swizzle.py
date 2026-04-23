@@ -184,8 +184,8 @@ if __name__ == "__main__":
     for lo, hi, desc in labels:
         print(f"  packed[{lo:2d}:{hi:2d}] = {packed[lo:hi]}  <- {desc}")
     print()
-    print("The kernel reads 32 consecutive rows at a time (a warp's worth),")
-    print("so rows 0, 32, 64, 96 are grouped together in memory.")
+    print("The kernel reads 32 consecutive rows at a time (a warp's worth), so rows 0, ")
+    print("32, 64, 96 are grouped together in memory.")
     print()
 
     # --- Step 4: round-trip check ---

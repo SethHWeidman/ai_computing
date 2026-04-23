@@ -16,7 +16,7 @@ each of the 32 threads in a warp handles 4 rows that are 32 rows apart:
 
     thread  0  ->  rows   0,  32,  64,  96
     thread  1  ->  rows   1,  33,  65,  97
-    thread 2  ->  rows   2,  34,  66,  98
+    thread  2  ->  rows   2,  34,  66,  98
     ...
     thread 31  ->  rows  31,  63,  95, 127
 
