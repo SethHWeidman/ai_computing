@@ -30,10 +30,10 @@ they fall into:
   separately. The hardware does the same total work per line, but issues many more
   transactions. This is **scattered** access.
 
-The penalty isn't just latency. Each cache-line fetch pulls 128 bytes from DRAM
-regardless of how many of those bytes are actually used. Scattered access wastes
-bandwidth on bytes that no thread asked for, and forces the memory controller into many
-small transactions instead of a few big ones.
+The penalty is wasted memory bandwidth. Each cache-line fetch pulls 128 bytes from DRAM
+regardless of how many are actually used, so scattered reads waste most of that bandwidth
+on bytes no thread asked for. The memory controller also has to issue many small
+transactions instead of a few large ones, which adds overhead on top.
 
 The goal of any GPU memory layout is therefore: **arrange data so that when a warp
 issues 32 simultaneous loads, those loads fall into as few cache lines as possible, and

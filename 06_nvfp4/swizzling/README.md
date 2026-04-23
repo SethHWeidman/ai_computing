@@ -1,9 +1,9 @@
 # Scale-factor swizzling for NVFP4 GEMM
 
-NVFP4 quantization requires storing a tensor with the blocks scales in memory, with one
-FP8 E4M3 scale per block of 16 elements. Naively, one might store them in row-major order
-as `scales[row, block]`. That is the natural representation, and it is what `nvfp4.py` in
-the parent directory computes.
+[NVFP4](../README.md) quantization requires storing a tensor with the blocks scales in
+memory, with one FP8 E4M3 scale per block of 16 elements. Naively, one might store them
+in row-major order as `scales[row, block]`. That is the natural representation, and it is
+what `nvfp4.py` in the parent directory computes.
 
 GEMM kernels don't read memory row by row, so reading scales in row-major order during a
 matmul causes many small, scattered memory fetches, which is slow. Swizzling fixes this
@@ -20,11 +20,11 @@ the data: without swizzling, each thread ends up reading way more data than it n
 its GEMM work, because its scales are scattered across cache lines whose other bytes it
 doesn't care about.
 
-The swizzled layout rearranges the physical bytes so that each thread's scales land in
-one contiguous chunk within a single cache line. One thread, one wide load, one cache
-line. The total bytes in memory are the same; only the ordering changes, and both the
-writer (quantization) and the reader (GEMM kernel) agree on that ordering via a shared
-coordinate formula.
+Swizzling means writing the scales to memory in a permuted order: instead of row by row,
+they're stored so that each thread's scales occupy one contiguous chunk within a single
+cache line. One thread, one wide load, one cache line. The total bytes in memory are the
+same; only the ordering changes, and both the writer (quantization) and the reader (GEMM
+kernel) agree on that ordering via a shared coordinate formula.
 
 For the full story, read in this order:
 
@@ -71,13 +71,6 @@ So the first 16 values are the 4 scales from row 0, then row 32, then row 64, th
 This pattern exists because the GEMM kernel processes 32 consecutive rows at a time (one
 warp's worth of work). Grouping the scales for rows 0, 32, 64, 96 together means that
 when the warp loads its scales, the reads are coalesced into contiguous memory accesses.
-
-### Why the 4 x 16 toy is too small
-
-The existing `nvfp4.py` example uses a 4 x 16 matrix. With 16-element blocks, that gives
-only one scale per row, so `inner` is always 0 and the swizzle is trivial. To see the
-interleaving, you need at least 128 rows and 4 blocks per row, which means a data matrix
-of at least 128 x 64.
 
 ## How to run
 
@@ -137,8 +130,8 @@ Reading the pattern:
   packed[24:28] = [260 261 262 263]  <- logical[ 65, 0:4]
   packed[28:32] = [388 389 390 391]  <- logical[ 97, 0:4]
 
-The kernel reads 32 consecutive rows at a time (a warp's worth),
-so rows 0, 32, 64, 96 are grouped together in memory.
+The kernel reads 32 consecutive rows at a time (a warp's worth), so rows 0, 
+32, 64, 96 are grouped together in memory.
 
 Round-trip check: PASSED (unswizzle recovers the original tensor)
 
@@ -150,7 +143,7 @@ Packed buffer length: 2048  (= 2 x 2 x 512)
 Round-trip check: PASSED
 ```
 
-### coalescing.py
+### [coalescing.py](coalescing.py)
 
 Shows byte-by-byte what each warp thread reads from the scale tensor in both layouts, and
 why the swizzled layout enables coalesced memory access.

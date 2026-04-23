@@ -2,7 +2,7 @@
 
 This file walks through the byte-level picture of how the NVFP4 swizzle achieves
 coalesced memory access for a 128 x 4 scale tile. It assumes you're familiar with cache
-lines, warps, and coalescing — see [background.md](background.md) if you need a refresher
+lines, warps, and coalescing; see [background.md](background.md) if you need a refresher
 on those concepts. For the high-level "what is swizzling" intuition, see the top of
 [README.md](README.md).
 
@@ -27,9 +27,9 @@ thread 31  ->  rows  31,  63,  95, 127
 Why strided rows rather than contiguous ones (e.g. thread 0 getting rows 0-3)? This comes
 from how tensor core MMA (matrix multiply-accumulate) instructions distribute matrix
 fragments across a warp. When a warp executes an MMA on a 128-row tile, thread `t`'s
-output elements come from rows that are strided 32 apart, not from 4 contiguous rows. The
-scale-loading pattern has to match the compute pattern, so each thread loads scales for
-the same rows it will use during the MMA.
+output elements come from rows that are strided 32 apart, not from 4 contiguous rows.
+**The scale-loading pattern has to match the compute pattern**, so each thread loads
+scales for the same rows it will use during the MMA.
 
 Each thread handles 4 rows, and for each row it needs all 4 block-scales (one per
 16-element block along K). That is 4 rows x 4 scales = 16 scales. Each E4M3 scale is 1
@@ -38,9 +38,9 @@ exactly one tile.
 
 ## Scales and values live in separate memory
 
-The NVFP4 format stores the FP4 payload (the quantized values) and the E4M3 block scales
-in **two completely separate buffers** in GPU memory. When the GEMM kernel loads scales,
-it reads from the scale buffer only. The FP4 values are elsewhere.
+The NVFP4 format stores the FP4 _payload_ (the quantized values) and the E4M3 block
+scales in **two completely separate buffers** in GPU memory. When the GEMM kernel loads
+scales, it reads from the scale buffer only. The FP4 values are elsewhere.
 
 So when we talk about cache lines below, we are talking about the **scale buffer** alone.
 Every byte in the 512-byte tile is a scale. The 128-byte cache line is a hardware
@@ -94,15 +94,17 @@ Now thread 0's scales land at:
 
 ```
 thread 0 addresses:  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
-                      ^^^^^^^^^^^  ^^^^^^^^^^  ^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^
-                        row 0       row 32        row 64          row 96
+                      ^^^^^^^^^^  ^^^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^^^^^
+                        row 0        row 32      row 64         row 96
                       all within cache line 0
 ```
 
 All 16 bytes are contiguous and within a single cache line. Thread 1 reads bytes 16-31
 (also cache line 0), thread 8 reads bytes 128-143 (cache line 1), and so on. Each cache
 line is read densely by 8 threads with no gaps, so the memory controller issues 4 clean
-128-byte transactions and every fetched byte is consumed.
+128-byte transactions and every fetched byte is consumed — and because the swizzle was
+designed to match the MMA fragment layout, each thread's 16 bytes are exactly the scales
+it needs for its assigned rows.
 
 ## Reading the formula
 
@@ -111,10 +113,10 @@ level of the desired thread-major layout:
 
 ```
 offset = (outer % 32) * 16   +   (outer // 32) * 4   +   inner
-         \_____________/          \______________/        \___/
-          which thread             which of the 4           which
-          owns this row?           rows that thread         column
-          (0..31)                  handles? (0..3)          (0..3)
+          \________/              \_________/            \___/
+          which thread            which of the 4         which
+          owns this row?          rows that thread       column
+          (0..31)                 handles? (0..3)        (0..3)
 ```
 
 Read left to right, the formula builds an address by nesting three levels:
@@ -132,6 +134,18 @@ In short, the layout is "thread-major": the outermost grouping is by thread, the
 grouping is by which of the thread's 4 rows, and the innermost grouping is by K block.
 Row-major is the opposite nesting order (outermost is row, innermost is column), which is
 why it scatters each thread's data across the buffer.
+
+### Worked example
+
+Row-major bytes 128–131 correspond to logical coordinates (row=32, col=0..3). Plugging
+into the formula:
+
+- `(32 % 32) * 16 = 0` — thread 0 owns row 32
+- `(32 // 32) * 4 = 4` — this is the second of thread 0's four rows
+- `inner = 0, 1, 2, 3`
+
+So row-major bytes 128–131 map to swizzled offsets 4–7, landing immediately after bytes
+0–3 (row 0's scales) in thread 0's contiguous 16-byte slot.
 
 ## Summary
 
