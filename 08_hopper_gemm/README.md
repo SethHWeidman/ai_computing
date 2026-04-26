@@ -29,6 +29,25 @@ Average kernel time: 1256.0 us
 Throughput: 875.38 TFLOP/s
 ```
 
+## Interpreting the throughput
+
+This is a strong result for a dense FP16 GEMM on one H100. The fair comparison is the
+dense FP16 Tensor Core peak. NVIDIA's
+[H100 specs](https://www.nvidia.com/en-gb/data-center/h100/) list H100 SXM FP16 Tensor
+Core peak as 1,979 TFLOP/s with sparsity, so the dense baseline is half of that: about
+989.5 TFLOP/s.
+
+For the example run above:
+
+```text
+875.38 / 989.5 ~= 88.5%
+```
+
+So this run is around 88.5% of the realistic dense FP16 Tensor Core peak. That is a good
+sign that the Hopper WGMMA/Tensor Core path is being used effectively. Treat this as a
+microbenchmark for one large, well-aligned GEMM shape rather than an end-to-end model
+throughput number.
+
 Use `--check` to run the slower reference check:
 
 ```bash
