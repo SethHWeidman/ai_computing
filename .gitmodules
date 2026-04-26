@@ -13,3 +13,6 @@
 [submodule "flash-attn-101"]
 	path = flash-attn-101
 	url = git@github.com:SethHWeidman/flash-attn-101.git
+[submodule "csrc/cutlass"]
+	path = csrc/cutlass
+	url = https://github.com/NVIDIA/cutlass.git
