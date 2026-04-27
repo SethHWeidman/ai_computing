@@ -55,7 +55,7 @@ class TensorPack:
     major: str
 
 
-def parse_csv_ints(value: str, expected_len: int) -> tuple[int, ...]:
+def _parse_csv_ints(value: str, expected_len: int) -> tuple[int, ...]:
     parts = tuple(int(x.strip()) for x in value.split(","))
     if len(parts) != expected_len:
         raise argparse.ArgumentTypeError(
@@ -65,6 +65,8 @@ def parse_csv_ints(value: str, expected_len: int) -> tuple[int, ...]:
 
 
 def load_hopper_dense_gemm_module() -> types.ModuleType:
+    # Load CUTLASS's dense_gemm.py as a normal Python module so this example can reuse
+    # HopperWgmmaGemmKernel without copying the whole kernel implementation.
     spec = util.spec_from_file_location("cute_hopper_dense_gemm", HOPPER_GEMM_EXAMPLE)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Failed to load module from {HOPPER_GEMM_EXAMPLE}")
@@ -79,7 +81,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mnk",
-        type=lambda s: parse_csv_ints(s, 3),
+        type=lambda s: _parse_csv_ints(s, 3),
         default=(8192, 8192, 8192),
         help="Problem size as M,N,K. Default: 8192,8192,8192",
     )
@@ -91,13 +93,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--tile-shape",
-        type=lambda s: parse_csv_ints(s, 2),
+        type=lambda s: _parse_csv_ints(s, 2),
         default=(128, 256),
         help="CTA tile shape M,N. Default: 128,256",
     )
     parser.add_argument(
         "--cluster-shape",
-        type=lambda s: parse_csv_ints(s, 2),
+        type=lambda s: _parse_csv_ints(s, 2),
         default=(1, 1),
         help="Cluster shape M,N. Default: 1,1",
     )
@@ -173,11 +175,19 @@ def make_tensor_pack(
 
 
 def describe_tensor(name: str, tensor: TensorPack) -> None:
+    device_tensor = tensor.device_torch
+    logical_shape = tuple(device_tensor.shape)
+
+    # A Torch stride is measured in elements, not bytes. Each entry says how far the
+    # storage pointer moves when that logical index increases by 1. For this example, the
+    # strides make the chosen k-major/n-major layout visible.
+    strides = tuple(device_tensor.stride())
+
     print(
         f"{name}: major={tensor.major}, "
         f"logical_shape={tuple(tensor.device_torch.shape)}, "
         f"source_shape={tensor.source_shape}, permute={tensor.permute_order}, "
-        f"strides={tuple(tensor.device_torch.stride())}, "
+        f"strides={strides}, "
         f"leading_dim={tensor.leading_dim}"
     )
 
@@ -210,7 +220,12 @@ def benchmark_kernel(
 
 def maybe_check_result(a: TensorPack, b: TensorPack, c: TensorPack) -> None:
     ref = torch.einsum("mkl,nkl->mnl", a.host_f32, b.host_f32).to(dtype=torch.float16)
-    testing.assert_close(c.device_torch.cpu(), ref, atol=1e-1, rtol=1e-3)
+
+    # c.device_torch is the GEMM output buffer in GPU memory. Copy it back to CPU memory
+    # so it lives on the same device as the Torch reference result above.
+    c_device = c.device_torch
+    c_host = c_device.cpu()
+    testing.assert_close(c_host, ref, atol=1e-1, rtol=1e-3)
 
 
 def main() -> None:
@@ -227,6 +242,7 @@ def main() -> None:
             f"{cc}."
         )
 
+    # `mod` is the loaded dense_gemm.py module; pull out its Hopper kernel class.
     mod = load_hopper_dense_gemm_module()
     kernel_cls = mod.HopperWgmmaGemmKernel
     m, n, k = args.mnk
@@ -263,6 +279,24 @@ def main() -> None:
     )
     torch_stream = cuda.Stream(device=args.device)
     cu_stream = cuda_driver.CUstream(torch_stream.cuda_stream)
+
+    # -------------------------------------------------------------------------
+    # JIT COMPILATION BOUNDARY
+    # -------------------------------------------------------------------------
+    # cute.compile(...) is the key line in this example.
+    #
+    # It takes:
+    #   1. gemm: the Python/CuTe DSL callable describing the Hopper GEMM kernel
+    #   2. a/b/c.cute_tensor: example argument descriptors, not data to multiply
+    #   3. cu_stream: the runtime stream argument type
+    #
+    # CuTe uses those inputs to specialize a compiled function for this signature: dtype,
+    # rank, layout family, alignment, dynamic leading dimension, and kernel static
+    # parameters such as tile shape and cluster shape.
+    #
+    # The result is a JIT executor. Calling compiled_gemm(...) later launches the
+    # generated GPU kernel. It does not execute the Python kernel recipe again, and it
+    # does not pay the JIT compilation cost again for this executor instance.
     compiled_gemm = cute.compile(
         gemm, a.cute_tensor, b.cute_tensor, c.cute_tensor, cu_stream
     )
