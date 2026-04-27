@@ -23,6 +23,82 @@ cd 08_hopper_gemm
 python 02_h100_single_gpu_gemm.py
 ```
 
+## Tile Shape And Cluster Shape
+
+### Execution Hierarchy
+
+CUDA's execution hierarchy is roughly:
+
+```text
+thread -> warp -> CTA / thread block -> thread-block cluster -> grid
+```
+
+CUTLASS often uses "CTA" for the work assigned to one CUDA thread block. NVIDIA's [CUDA
+programming
+guide](https://docs.nvidia.com/cuda/archive/13.1.1/cuda-programming-guide/01-introduction/programming-model.html#thread-block-clusters)
+describes thread-block clusters as a Hopper-era hierarchy level: on compute capability
+9.0 and newer GPUs, a cluster is a group of thread blocks that can be co-scheduled on one
+GPU Processing Cluster.
+
+### Tile Shape
+
+`--tile-shape` is measured in matrix elements. With the default `--tile-shape 128,256`,
+one CTA computes one `128 x 256` tile of the output matrix `C`. The K tile size is chosen
+by the Hopper kernel setup; for the default configuration it becomes a CTA tile of `128 x
+256 x 64`.
+
+### Cluster Shape
+
+`--cluster-shape` is measured in CTAs, not matrix elements. With `--tile-shape 128,256
+--cluster-shape 2,1`, each CTA still owns one `128 x 256` tile of `C`, but Hopper groups
+two neighboring CTAs along M into one thread-block cluster. That cluster covers a `256 x
+256` region of `C`.
+
+This is different from `--cluster-shape 1,1` because the CTAs are grouped into a Hopper
+thread-block cluster instead of being launched only as standalone blocks. Each CTA still
+computes its own `tile-shape` tile of `C`, but CTAs in the same cluster are co-scheduled
+close enough together that Hopper can give them cluster-level coordination.
+
+### TMA Multicast
+
+For this GEMM, the easiest cluster feature to understand is **TMA multicast**. TMA is
+Hopper's Tensor Memory Accelerator: a hardware path for copying tensor tiles between
+global memory and shared memory. "Multicast" means one TMA load can deliver the same
+input tile to multiple CTAs in the same cluster.
+
+That helps because neighboring GEMM tiles reuse input data. CTAs grouped along M compute
+different rows of `C` but the same columns, so they can share the same `B` tile. CTAs
+grouped along N compute the same rows of `C` but different columns, so they can share the
+same `A` tile.
+
+For example, with `--tile-shape 128,256 --cluster-shape 2,1`, the cluster contains two
+CTAs along M. Each CTA still owns one `128 x 256` output tile, but together the cluster
+covers a `256 x 256` region of `C`. Those two CTAs need different `A` tiles but the same
+`B` tile, so the kernel may use TMA multicast to load the `B` tile once and deliver it to
+both CTAs' shared-memory buffers.
+
+The table below is a quick map of what reuse each cluster shape can expose:
+
+| Cluster shape | What is grouped? | Possible operand reuse |
+|---|---:|---|
+| `1,1` | One CTA | No inter-CTA multicast |
+| `2,1` | Two CTAs along M | Share/multicast `B` tiles |
+| `1,2` | Two CTAs along N | Share/multicast `A` tiles |
+| `2,2` | Four CTAs in MxN | Share/multicast both `A` and `B` tiles |
+
+Cluster shape can reduce duplicated global-memory traffic, but it is still a tuning knob
+rather than an automatic win. Larger clusters also make multiple CTAs cooperate as one
+cluster, which adds cluster-level coordination, scheduling constraints, and
+pipeline/barrier bookkeeping. If the kernel already hides TMA load latency behind WGMMA
+compute, or if nearby CTAs already get good L2 reuse, the extra coordination can outweigh
+the saved input-tile traffic.
+
+On the default `8192 x 8192 x 8192` problem with `--tile-shape 128,256`, this happened in
+practice: `--cluster-shape 2,2` enabled multicast for both `A` and `B`, but it ran slower
+than `--cluster-shape 1,1` on the measured H100 run. The `1,1` run took `1231.4 us`
+(`892.91 TFLOP/s`), while the `2,2` run took `1377.3 us` (`798.29 TFLOP/s`). That is
+about 12% longer kernel time, or about 11% lower throughput.
+
 Example output:
 
 ```text
