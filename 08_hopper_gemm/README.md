@@ -1,12 +1,26 @@
 # Hopper GEMM
 
-A minimal single-GPU FP16 GEMM runner for Hopper/H100 using CUTLASS CuTe DSL.
+Single-GPU FP16 GEMM runners for Hopper/H100 using CUTLASS CuTe DSL.
 
 ## How to run
 
+### `01_h100_single_gpu_gemm.py`
+
+Run the minimal wrapper around the CUTLASS Hopper dense GEMM example:
+
 ```bash
 cd 08_hopper_gemm
-python h100_single_gpu_gemm.py
+python 01_h100_single_gpu_gemm.py
+```
+
+### `02_h100_single_gpu_gemm.py`
+
+Run the more explicit version that shows tensor creation, DLPack wrapping,
+`HopperWgmmaGemmKernel` construction, `cute.compile(...)`, and launch timing:
+
+```bash
+cd 08_hopper_gemm
+python 02_h100_single_gpu_gemm.py
 ```
 
 Example output:
@@ -75,13 +89,19 @@ alignment and a large K dimension:
 >2.0 ms      likely worth investigating layout, tiling, or occupancy
 ```
 
-Use `--check` to run the slower reference check:
+Use `--check` to run the slower reference check with either runner:
 
 ```bash
-python h100_single_gpu_gemm.py --check
+python 01_h100_single_gpu_gemm.py --check
+python 02_h100_single_gpu_gemm.py --check
 ```
+
+Successful checked runs print `Reference check: passed`.
 
 ## Files
 
-- `h100_single_gpu_gemm.py`: loads the CUTLASS CuTe DSL Hopper dense GEMM example from
+- `01_h100_single_gpu_gemm.py`: loads the CUTLASS CuTe DSL Hopper dense GEMM example from
   `csrc/cutlass`, runs it on one H100, and reports average kernel time plus throughput.
+- `02_h100_single_gpu_gemm.py`: exposes more of the host-side setup directly: tensor
+  allocation/layout, CuTe tensor wrapping, kernel construction, JIT compilation, launch,
+  optional Torch reference checking, and the same timing/throughput report.
