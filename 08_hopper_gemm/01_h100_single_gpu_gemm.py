@@ -68,13 +68,13 @@ def parse_args() -> argparse.Namespace:
         "--tile-shape",
         type=lambda s: parse_csv_ints(s, 2),
         default=(128, 256),
-        help="CTA tile shape M,N. Default: 128,256",
+        help="CTA/thread-block output tile shape M,N in elements. Default: 128,256",
     )
     parser.add_argument(
         "--cluster-shape",
         type=lambda s: parse_csv_ints(s, 2),
         default=(1, 1),
-        help="Cluster shape M,N. Default: 1,1",
+        help="Thread-block cluster shape M,N in CTAs. Default: 1,1",
     )
     parser.add_argument(
         "--device", type=int, default=0, help="CUDA device index to run on. Default: 0"
