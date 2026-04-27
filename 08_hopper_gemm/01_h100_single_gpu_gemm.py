@@ -141,6 +141,8 @@ def main() -> None:
     )
     print(f"Average kernel time: {exec_time_us:.1f} us")
     print(f"Throughput: {tflops:.2f} TFLOP/s")
+    if args.check:
+        print("Reference check: passed")
 
 
 if __name__ == "__main__":
