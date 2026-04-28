@@ -38,7 +38,11 @@ import cutlass.torch as cutlass_torch
 from cutlass.torch import TensorInitType
 
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+MODULE_PATH = pathlib.Path(__file__)
+RESOLVED_MODULE_PATH = MODULE_PATH.resolve()
+MODULE_PARENTS = RESOLVED_MODULE_PATH.parents
+REPO_ROOT = MODULE_PARENTS[1]
+
 HOPPER_GEMM_EXAMPLE = (
     REPO_ROOT
     / "csrc"

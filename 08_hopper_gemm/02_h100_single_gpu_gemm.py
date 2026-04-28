@@ -31,7 +31,11 @@ import cutlass.torch as cutlass_torch
 from cutlass.torch import TensorInitType
 
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+MODULE_PATH = pathlib.Path(__file__)
+RESOLVED_MODULE_PATH = MODULE_PATH.resolve()
+MODULE_PARENTS = RESOLVED_MODULE_PATH.parents
+REPO_ROOT = MODULE_PARENTS[1]
+
 HOPPER_GEMM_EXAMPLE = (
     REPO_ROOT
     / "csrc"
@@ -70,8 +74,9 @@ def load_hopper_dense_gemm_module() -> types.ModuleType:
     spec = util.spec_from_file_location("cute_hopper_dense_gemm", HOPPER_GEMM_EXAMPLE)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Failed to load module from {HOPPER_GEMM_EXAMPLE}")
+    loader = spec.loader
     module = util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    loader.exec_module(module)
     return module
 
 
