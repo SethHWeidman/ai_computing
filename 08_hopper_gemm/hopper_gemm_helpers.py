@@ -261,7 +261,10 @@ def maybe_check_result(a: TensorPack, b: TensorPack, c: TensorPack) -> None:
     torch_float16 = torch.float16
     ref = ref_f32.to(dtype=torch_float16)
 
+    # c.device_torch is the GEMM output buffer in GPU memory.
     c_device = c.device_torch
+
+    # Copy it back to CPU memory so it lives on the same device as the reference.
     c_host = c_device.cpu()
     testing.assert_close(c_host, ref, atol=1e-1, rtol=1e-3)
 
