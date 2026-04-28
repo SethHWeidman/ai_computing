@@ -65,8 +65,8 @@ def _parse_csv_ints(value: str, expected_len: int) -> tuple[int, ...]:
 
 
 def load_hopper_dense_gemm_module() -> types.ModuleType:
-    # Load CUTLASS's dense_gemm.py as a normal Python module so this example can reuse
-    # HopperWgmmaGemmKernel without copying the whole kernel implementation.
+    # Load CUTLASS's dense_gemm.py as a normal Python module so this example can
+    # reuse HopperWgmmaGemmKernel without copying the whole kernel implementation.
     spec = util.spec_from_file_location("cute_hopper_dense_gemm", HOPPER_GEMM_EXAMPLE)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Failed to load module from {HOPPER_GEMM_EXAMPLE}")
@@ -132,8 +132,8 @@ def make_tensor_pack(
     dtype: type[cutlass.Numeric],
     major: str,
 ) -> TensorPack:
-    # If mode0 is major we construct storage as (L, mode1, mode0) and then permute to the
-    # logical (mode0, mode1, L) view. Otherwise we start from (L, mode0, mode1).
+    # If mode0 is major we construct storage as (L, mode1, mode0) and then permute to
+    # the logical (mode0, mode1, L) view. Otherwise we start from (L, mode0, mode1).
     source_shape = (batch, mode1, mode0) if is_mode0_major else (batch, mode0, mode1)
     permute_order = (2, 1, 0) if is_mode0_major else (1, 2, 0)
     leading_dim = 0 if is_mode0_major else 1
@@ -179,16 +179,13 @@ def describe_tensor(name: str, tensor: TensorPack) -> None:
     logical_shape = tuple(device_tensor.shape)
 
     # A Torch stride is measured in elements, not bytes. Each entry says how far the
-    # storage pointer moves when that logical index increases by 1. For this example, the
-    # strides make the chosen k-major/n-major layout visible.
+    # storage pointer moves when a logical index increases by 1; here, that makes the
+    # chosen k-major/n-major layout visible to the WGMMA/TMA path.
     strides = tuple(device_tensor.stride())
-
     print(
-        f"{name}: major={tensor.major}, "
-        f"logical_shape={tuple(tensor.device_torch.shape)}, "
+        f"{name}: major={tensor.major}, logical_shape={logical_shape}, "
         f"source_shape={tensor.source_shape}, permute={tensor.permute_order}, "
-        f"strides={strides}, "
-        f"leading_dim={tensor.leading_dim}"
+        f"strides={strides}, leading_dim={tensor.leading_dim}"
     )
 
 
@@ -221,8 +218,8 @@ def benchmark_kernel(
 def maybe_check_result(a: TensorPack, b: TensorPack, c: TensorPack) -> None:
     ref = torch.einsum("mkl,nkl->mnl", a.host_f32, b.host_f32).to(dtype=torch.float16)
 
-    # c.device_torch is the GEMM output buffer in GPU memory. Copy it back to CPU memory
-    # so it lives on the same device as the Torch reference result above.
+    # c.device_torch is the GEMM output buffer in GPU memory. Copy it back to CPU
+    # memory so it lives on the same device as the Torch reference result above.
     c_device = c.device_torch
     c_host = c_device.cpu()
     testing.assert_close(c_host, ref, atol=1e-1, rtol=1e-3)
@@ -272,12 +269,22 @@ def main() -> None:
 
     print()
     print("Step 2: instantiate HopperWgmmaGemmKernel and JIT-compile it with CuTe.")
+    # tile_shape_mn is the per-CTA output tile; cluster_shape_mn groups CTAs in the M,N
+    # tile grid. In this kernel, grouping along M can multicast B and grouping along N
+    # can multicast A. Larger clusters save duplicated loads only when that benefit
+    # beats the added scheduling and barrier coordination.
     gemm = kernel_cls(
         acc_dtype=cutlass.Float32,
         tile_shape_mn=args.tile_shape,
         cluster_shape_mn=args.cluster_shape,
     )
+
+    # Create one CUDA stream for this example. A stream is the queue where GPU work is
+    # enqueued; operations in the same stream run in issue order.
     torch_stream = cuda.Stream(device=args.device)
+
+    # PyTorch owns the stream object, while CuTe's compiled launcher expects a CUDA
+    # Driver API stream handle. This wraps the same underlying stream for CuTe.
     cu_stream = cuda_driver.CUstream(torch_stream.cuda_stream)
 
     # -------------------------------------------------------------------------

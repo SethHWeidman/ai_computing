@@ -64,12 +64,18 @@ def parse_args() -> argparse.Namespace:
         default=1,
         help="Batch count L in the underlying MxNxKxL GEMM. Default: 1",
     )
+    # One CTA computes one MxN output tile. The Hopper kernel supplies the K tile
+    # internally; with the default this prints as tile_shape_mnk=(128, 256, 64).
     parser.add_argument(
         "--tile-shape",
         type=lambda s: parse_csv_ints(s, 2),
         default=(128, 256),
         help="CTA/thread-block output tile shape M,N in elements. Default: 128,256",
     )
+    # cluster-shape groups neighboring CTAs in the M,N tile grid. For example,
+    # tile=(128,256), cluster=(2,1) covers a 256 x 256 output region while each CTA
+    # still owns one 128 x 256 tile. In this kernel, clustering along M can multicast B
+    # tiles, and clustering along N can multicast A tiles.
     parser.add_argument(
         "--cluster-shape",
         type=lambda s: parse_csv_ints(s, 2),
