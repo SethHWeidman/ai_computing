@@ -11,121 +11,48 @@ point tuned for a single H100.
 """
 
 import argparse
-from importlib import util
-import pathlib
-import types
 
-from torch import cuda
-
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
-HOPPER_GEMM_EXAMPLE = (
-    REPO_ROOT
-    / "csrc"
-    / "cutlass"
-    / "examples"
-    / "python"
-    / "CuTeDSL"
-    / "hopper"
-    / "dense_gemm.py"
-)
-
-
-def parse_csv_ints(value: str, expected_len: int) -> tuple[int, ...]:
-    parts = tuple(int(x.strip()) for x in value.split(","))
-    if len(parts) != expected_len:
-        raise argparse.ArgumentTypeError(
-            f"expected {expected_len} comma-separated integers, got: {value!r}"
-        )
-    return parts
-
-
-def load_hopper_dense_gemm_module() -> types.ModuleType:
-    spec = util.spec_from_file_location("cute_hopper_dense_gemm", HOPPER_GEMM_EXAMPLE)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Failed to load module from {HOPPER_GEMM_EXAMPLE}")
-    module = util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+import hopper_gemm_helpers
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run a large single-GPU FP16 GEMM on Hopper/H100 via CuTe DSL."
     )
-    parser.add_argument(
-        "--mnk",
-        type=lambda s: parse_csv_ints(s, 3),
-        default=(8192, 8192, 8192),
-        help="Problem size as M,N,K. Default: 8192,8192,8192",
-    )
-    parser.add_argument(
-        "--batch",
-        type=int,
-        default=1,
-        help="Batch count L in the underlying MxNxKxL GEMM. Default: 1",
-    )
     # One CTA computes one MxN output tile. The Hopper kernel supplies the K tile
     # internally; with the default this prints as tile_shape_mnk=(128, 256, 64).
-    parser.add_argument(
-        "--tile-shape",
-        type=lambda s: parse_csv_ints(s, 2),
-        default=(128, 256),
-        help="CTA/thread-block output tile shape M,N in elements. Default: 128,256",
-    )
     # cluster-shape groups neighboring CTAs in the M,N tile grid. For example,
     # tile=(128,256), cluster=(2,1) covers a 256 x 256 output region while each CTA
     # still owns one 128 x 256 tile. In this kernel, clustering along M can multicast B
     # tiles, and clustering along N can multicast A tiles.
-    parser.add_argument(
-        "--cluster-shape",
-        type=lambda s: parse_csv_ints(s, 2),
-        default=(1, 1),
-        help="Thread-block cluster shape M,N in CTAs. Default: 1,1",
-    )
-    parser.add_argument(
-        "--device", type=int, default=0, help="CUDA device index to run on. Default: 0"
-    )
-    parser.add_argument(
-        "--warmup",
-        type=int,
-        default=3,
-        help="Warmup iterations before benchmarking. Default: 3",
-    )
-    parser.add_argument(
-        "--iterations", type=int, default=10, help="Benchmark iterations. Default: 10"
-    )
-    parser.add_argument(
-        "--check",
-        action="store_true",
-        help="Run the reference check. This is much slower for large GEMMs.",
+    hopper_gemm_helpers.add_common_gemm_arguments(
+        parser,
+        tile_shape_help=(
+            "CTA/thread-block output tile shape M,N in elements. Default: 128,256"
+        ),
+        cluster_shape_help="Thread-block cluster shape M,N in CTAs. Default: 1,1",
+        check_help="Run the reference check. This is much slower for large GEMMs.",
     )
     return parser.parse_args()
 
 
 def main() -> None:
-    if not cuda.is_available():
-        raise RuntimeError("CUDA is required to run this example.")
-
     args = parse_args()
-    cuda.set_device(args.device)
-    device_name = cuda.get_device_name(args.device)
-    cc = cuda.get_device_capability(args.device)
-    if cc[0] != 9:
-        raise RuntimeError(
-            "This example is intended for Hopper SM90 GPUs; got compute capability "
-            f"{cc}."
-        )
+    device_name, cc = hopper_gemm_helpers.require_hopper_device(args.device)
 
-    mod = load_hopper_dense_gemm_module()
+    mod = hopper_gemm_helpers.load_hopper_dense_gemm_module()
+    mod_cutlass = mod.cutlass
+    float16 = mod_cutlass.Float16
+    float32 = mod_cutlass.Float32
 
     m, n, k = args.mnk
     l = args.batch
     exec_time_us = mod.run(
         (m, n, k, l),
-        mod.cutlass.Float16,
-        mod.cutlass.Float16,
-        mod.cutlass.Float16,
-        mod.cutlass.Float32,
+        float16,
+        float16,
+        float16,
+        float32,
         "k",
         "k",
         "n",
@@ -138,17 +65,19 @@ def main() -> None:
         use_cold_l2=False,
     )
 
-    tflops = (2.0 * m * n * k * l) / (exec_time_us * 1e-6) / 1e12
-    print()
-    print(f"GPU: {device_name} (device {args.device}, cc {cc[0]}.{cc[1]})")
-    print(
-        f"Problem: M={m}, N={n}, K={k}, batch={l}, tile={args.tile_shape}, "
-        f"cluster={args.cluster_shape}"
+    hopper_gemm_helpers.print_benchmark_summary(
+        device_name=device_name,
+        device=args.device,
+        cc=cc,
+        m=m,
+        n=n,
+        k=k,
+        batch=l,
+        tile_shape=args.tile_shape,
+        cluster_shape=args.cluster_shape,
+        exec_time_us=exec_time_us,
+        checked=args.check,
     )
-    print(f"Average kernel time: {exec_time_us:.1f} us")
-    print(f"Throughput: {tflops:.2f} TFLOP/s")
-    if args.check:
-        print("Reference check: passed")
 
 
 if __name__ == "__main__":
