@@ -27,7 +27,7 @@ import math
 import pathlib
 import types
 
-import cuda.bindings.driver as cuda_driver
+from cuda.bindings import driver as cuda_driver
 import torch
 from torch import cuda, testing
 
@@ -97,8 +97,9 @@ def load_hopper_dense_gemm_module() -> types.ModuleType:
     spec = util.spec_from_file_location("cute_hopper_dense_gemm", HOPPER_GEMM_EXAMPLE)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Failed to load module from {HOPPER_GEMM_EXAMPLE}")
+    loader = spec.loader
     module = util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    loader.exec_module(module)
     return module
 
 
@@ -247,9 +248,34 @@ def describe_tensor(name: str, tensor: TensorPack) -> None:
 
 
 def print_hopper_plan(gemm: object, c: TensorPack) -> None:
-    m, n, batch = tuple(c.device_torch.shape)
-    tile_m, tile_n, tile_k = gemm.tile_shape_mnk
-    cluster_m, cluster_n = gemm.cluster_shape_mn
+    c_device = c.device_torch
+    c_shape = c_device.shape
+    m, n, batch = tuple(c_shape)
+
+    tile_shape_mnk = gemm.tile_shape_mnk
+    tile_m, tile_n, tile_k = tile_shape_mnk
+    cluster_shape_mn = gemm.cluster_shape_mn
+    cluster_m, cluster_n = cluster_shape_mn
+    atom_layout_mnk = gemm.atom_layout_mnk
+    mma_warp_groups = gemm.mma_warp_groups
+    threads_per_cta = gemm.threads_per_cta
+    acc_dtype = gemm.acc_dtype
+    num_mcast_ctas_a = gemm.num_mcast_ctas_a
+    num_mcast_ctas_b = gemm.num_mcast_ctas_b
+    is_a_mcast = gemm.is_a_mcast
+    is_b_mcast = gemm.is_b_mcast
+    epi_tile = gemm.epi_tile
+    epi_m, epi_n = epi_tile
+    ab_stage = gemm.ab_stage
+    epi_stage = gemm.epi_stage
+    smem_capacity = gemm.smem_capacity
+    a_dtype = gemm.a_dtype
+    b_dtype = gemm.b_dtype
+    c_dtype = gemm.c_dtype
+    a_dtype_width = a_dtype.width
+    b_dtype_width = b_dtype.width
+    c_dtype_width = c_dtype.width
+
     tiles_m = math.ceil(m / tile_m)
     tiles_n = math.ceil(n / tile_n)
     grid = (
@@ -257,39 +283,39 @@ def print_hopper_plan(gemm: object, c: TensorPack) -> None:
         math.ceil(tiles_n / cluster_n) * cluster_n,
         batch,
     )
-    cluster = (*gemm.cluster_shape_mn, 1)
-    num_warps = gemm.threads_per_cta // 32
-    mcast_size = gemm.num_mcast_ctas_a + gemm.num_mcast_ctas_b - 1
+    cluster = (*cluster_shape_mn, 1)
+    num_warps = threads_per_cta // 32
+    mcast_size = num_mcast_ctas_a + num_mcast_ctas_b - 1
     consumer_arrive_count = mcast_size * num_warps
-    a_stage_bytes = tile_m * tile_k * gemm.a_dtype.width // 8
-    b_stage_bytes = tile_n * tile_k * gemm.b_dtype.width // 8
+    a_stage_bytes = tile_m * tile_k * a_dtype_width // 8
+    b_stage_bytes = tile_n * tile_k * b_dtype_width // 8
     ab_stage_bytes = a_stage_bytes + b_stage_bytes
-    a_total_bytes = a_stage_bytes * gemm.ab_stage
-    b_total_bytes = b_stage_bytes * gemm.ab_stage
-    epi_stage_bytes = gemm.epi_tile[0] * gemm.epi_tile[1] * gemm.c_dtype.width // 8
+    a_total_bytes = a_stage_bytes * ab_stage
+    b_total_bytes = b_stage_bytes * ab_stage
+    epi_stage_bytes = epi_m * epi_n * c_dtype_width // 8
 
     print()
     print("Step 3: inspect the Hopper-specific static plan from CuTe compilation.")
     print("  WGMMA:")
-    print(f"    CTA tile_shape_mnk={gemm.tile_shape_mnk}")
+    print(f"    CTA tile_shape_mnk={tile_shape_mnk}")
     print(
-        f"    atom_layout_mnk={gemm.atom_layout_mnk}, "
-        f"warp_groups={gemm.mma_warp_groups}, threads_per_cta={gemm.threads_per_cta}"
+        f"    atom_layout_mnk={atom_layout_mnk}, "
+        f"warp_groups={mma_warp_groups}, threads_per_cta={threads_per_cta}"
     )
-    print(f"    accumulator_dtype={gemm.acc_dtype}")
+    print(f"    accumulator_dtype={acc_dtype}")
 
     print("  TMA:")
     print(
-        f"    A G2S tile={(gemm.tile_shape_mnk[0], gemm.tile_shape_mnk[2])}, "
-        f"multicast_ctas={gemm.num_mcast_ctas_a}, "
-        f"op={'G2SMulticast' if gemm.is_a_mcast else 'G2S'}"
+        f"    A G2S tile={(tile_m, tile_k)}, "
+        f"multicast_ctas={num_mcast_ctas_a}, "
+        f"op={'G2SMulticast' if is_a_mcast else 'G2S'}"
     )
     print(
-        f"    B G2S tile={(gemm.tile_shape_mnk[1], gemm.tile_shape_mnk[2])}, "
-        f"multicast_ctas={gemm.num_mcast_ctas_b}, "
-        f"op={'G2SMulticast' if gemm.is_b_mcast else 'G2S'}"
+        f"    B G2S tile={(tile_n, tile_k)}, "
+        f"multicast_ctas={num_mcast_ctas_b}, "
+        f"op={'G2SMulticast' if is_b_mcast else 'G2S'}"
     )
-    print(f"    C S2G epilogue_tile={gemm.epi_tile}, epi_stage={gemm.epi_stage}")
+    print(f"    C S2G epilogue_tile={epi_tile}, epi_stage={epi_stage}")
 
     print("  CTA cluster:")
     print(
@@ -303,8 +329,8 @@ def print_hopper_plan(gemm: object, c: TensorPack) -> None:
 
     print("  Shared memory and pipeline:")
     print(
-        f"    sm90_capacity={_format_bytes(gemm.smem_capacity)}, "
-        f"ab_stage={gemm.ab_stage}, epi_stage={gemm.epi_stage}"
+        f"    sm90_capacity={_format_bytes(smem_capacity)}, "
+        f"ab_stage={ab_stage}, epi_stage={epi_stage}"
     )
     print(
         f"    A per AB stage={_format_bytes(a_stage_bytes)}, "
@@ -318,9 +344,9 @@ def print_hopper_plan(gemm: object, c: TensorPack) -> None:
     )
     print(
         f"    nominal SMEM elements: "
-        f"A={_format_count(tile_m * tile_k * gemm.ab_stage)}, "
-        f"B={_format_count(tile_n * tile_k * gemm.ab_stage)}, "
-        f"C_epi={_format_count(gemm.epi_tile[0] * gemm.epi_tile[1] * gemm.epi_stage)}"
+        f"A={_format_count(tile_m * tile_k * ab_stage)}, "
+        f"B={_format_count(tile_n * tile_k * ab_stage)}, "
+        f"C_epi={_format_count(epi_m * epi_n * epi_stage)}"
     )
 
 
@@ -334,9 +360,13 @@ def benchmark_kernel(
     warmup_iterations: int,
     iterations: int,
 ) -> float:
+    a_cute = a.cute_tensor
+    b_cute = b.cute_tensor
+    c_cute = c.cute_tensor
+
     with cuda.stream(torch_stream):
         for _ in range(warmup_iterations):
-            compiled_gemm(a.cute_tensor, b.cute_tensor, c.cute_tensor, cu_stream)
+            compiled_gemm(a_cute, b_cute, c_cute, cu_stream)
     torch_stream.synchronize()
 
     start = cuda.Event(enable_timing=True)
@@ -344,17 +374,18 @@ def benchmark_kernel(
     with cuda.stream(torch_stream):
         start.record(torch_stream)
         for _ in range(iterations):
-            compiled_gemm(a.cute_tensor, b.cute_tensor, c.cute_tensor, cu_stream)
+            compiled_gemm(a_cute, b_cute, c_cute, cu_stream)
         end.record(torch_stream)
     end.synchronize()
     return start.elapsed_time(end) * 1000.0 / iterations
 
 
 def maybe_check_result(a: TensorPack, b: TensorPack, c: TensorPack) -> None:
-    ref = torch.einsum("mkl,nkl->mnl", a.host_f32, b.host_f32).to(dtype=torch.float16)
+    a_host = a.host_f32
+    b_host = b.host_f32
+    ref_f32 = torch.einsum("mkl,nkl->mnl", a_host, b_host)
+    ref = ref_f32.to(dtype=torch.float16)
 
-    # c.device_torch is the GEMM output buffer in GPU memory. Copy it back to CPU
-    # memory so it lives on the same device as the Torch reference result above.
     c_device = c.device_torch
     c_host = c_device.cpu()
     testing.assert_close(c_host, ref, atol=1e-1, rtol=1e-3)
@@ -410,9 +441,10 @@ def main() -> None:
     )
     torch_stream = cuda.Stream(device=args.device)
     cu_stream = cuda_driver.CUstream(torch_stream.cuda_stream)
-    compiled_gemm = cute.compile(
-        gemm, a.cute_tensor, b.cute_tensor, c.cute_tensor, cu_stream
-    )
+    a_cute = a.cute_tensor
+    b_cute = b.cute_tensor
+    c_cute = c.cute_tensor
+    compiled_gemm = cute.compile(gemm, a_cute, b_cute, c_cute, cu_stream)
     print_hopper_plan(gemm, c)
 
     if args.describe_only:
