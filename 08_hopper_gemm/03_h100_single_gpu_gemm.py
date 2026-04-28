@@ -100,20 +100,34 @@ def print_hopper_plan(gemm: object, c: hopper_gemm_helpers.TensorPack) -> None:
     c_shape = c_device.shape
     m, n, batch = tuple(c_shape)
 
+    # tile_shape_mnk is the CTA-level GEMM tile: the CTA computes tile_m x tile_n
+    # output elements while the mainloop advances through K in tile_k-sized slices.
     tile_shape_mnk = gemm.tile_shape_mnk
     tile_m, tile_n, tile_k = tile_shape_mnk
+
     cluster_shape_mn = gemm.cluster_shape_mn
     cluster_m, cluster_n = cluster_shape_mn
+
+    # WGMMA is organized at warp-group granularity. A warp group is 4 warps / 128
+    # threads on Hopper. This atom layout is not the A/B/C tensor memory layout; it
+    # describes how the CTA's MMA work is decomposed into WGMMA atoms.
     atom_layout_mnk = gemm.atom_layout_mnk
     mma_warp_groups = gemm.mma_warp_groups
     threads_per_cta = gemm.threads_per_cta
     acc_dtype = gemm.acc_dtype
+
     num_mcast_ctas_a = gemm.num_mcast_ctas_a
     num_mcast_ctas_b = gemm.num_mcast_ctas_b
     is_a_mcast = gemm.is_a_mcast
     is_b_mcast = gemm.is_b_mcast
+
+    # The mainloop computes the full C tile, but the epilogue stores it through
+    # narrower shared-memory/TMA stripes to keep the staging footprint regular.
     epi_tile = gemm.epi_tile
     epi_m, epi_n = epi_tile
+
+    # These stage counts are static pipeline choices. More stages can overlap more
+    # future K-slices, but every stage spends shared memory under the SM90 budget.
     ab_stage = gemm.ab_stage
     epi_stage = gemm.epi_stage
     smem_capacity = gemm.smem_capacity
@@ -132,52 +146,94 @@ def print_hopper_plan(gemm: object, c: hopper_gemm_helpers.TensorPack) -> None:
         batch,
     )
     cluster = (*cluster_shape_mn, 1)
-    num_warps = threads_per_cta // 32
+    ctas_per_cluster = math.prod(cluster)
+    if ctas_per_cluster == 1:
+        multicast_context = "single-CTA cluster: no inter-CTA multicast"
+    else:
+        multicast_context = "larger clusters may enable A and/or B multicast"
+
+    threads_per_warp = 32
+    warps_per_warp_group = 4
+    warp_group_threads = warps_per_warp_group * threads_per_warp
+    num_warps = threads_per_cta // threads_per_warp
+
     mcast_size = num_mcast_ctas_a + num_mcast_ctas_b - 1
-    consumer_arrive_count = mcast_size * num_warps
-    a_stage_bytes = tile_m * tile_k * a_dtype_width // 8
-    b_stage_bytes = tile_n * tile_k * b_dtype_width // 8
+    producer_warp_groups = 1
+    consumer_warp_groups = mma_warp_groups - producer_warp_groups
+    if consumer_warp_groups < 1:
+        consumer_warp_groups = 1
+    consumer_warps = consumer_warp_groups * warps_per_warp_group
+    consumer_arrive_count_estimate = mcast_size * consumer_warps
+
+    a_bytes_per_element = a_dtype_width // 8
+    b_bytes_per_element = b_dtype_width // 8
+    c_bytes_per_element = c_dtype_width // 8
+    a_stage_elements = tile_m * tile_k
+    b_stage_elements = tile_n * tile_k
+    epi_stage_elements = epi_m * epi_n
+    a_stage_bytes = a_stage_elements * a_bytes_per_element
+    b_stage_bytes = b_stage_elements * b_bytes_per_element
     ab_stage_bytes = a_stage_bytes + b_stage_bytes
     a_total_bytes = a_stage_bytes * ab_stage
     b_total_bytes = b_stage_bytes * ab_stage
-    epi_stage_bytes = epi_m * epi_n * c_dtype_width // 8
+    ab_total_bytes = a_total_bytes + b_total_bytes
+    epi_stage_bytes = epi_stage_elements * c_bytes_per_element
+    epi_ring_bytes = epi_stage_bytes * epi_stage
+    epi_stripes_n = math.ceil(tile_n / epi_n)
+    full_c_tile = (tile_m, tile_n)
 
     print()
     print("Step 3: inspect the Hopper-specific static plan from CuTe compilation.")
     print("  WGMMA:")
-    print(f"    CTA tile_shape_mnk={tile_shape_mnk}")
     print(
-        f"    atom_layout_mnk={atom_layout_mnk}, "
-        f"warp_groups={mma_warp_groups}, threads_per_cta={threads_per_cta}"
+        f"    CTA tile_shape_mnk={tile_shape_mnk}: C tile={full_c_tile}, "
+        f"K stage={tile_k}"
     )
+    print(
+        f"    atom_layout_mnk={atom_layout_mnk}, warp_groups={mma_warp_groups}, "
+        f"threads_per_cta={threads_per_cta}"
+    )
+    print(
+        f"    warp-group math: {mma_warp_groups} groups * {warps_per_warp_group} "
+        f"warps/group * {threads_per_warp} threads/warp = "
+        f"{mma_warp_groups * warp_group_threads} threads"
+    )
+    print("    atom_layout_mnk is WGMMA atom layout, not A/B/C tensor layout")
     print(f"    accumulator_dtype={acc_dtype}")
 
     print("  TMA:")
     print(
-        f"    A G2S tile={(tile_m, tile_k)}, "
-        f"multicast_ctas={num_mcast_ctas_a}, "
+        f"    A TMA G2S tile={(tile_m, tile_k)}, multicast_ctas={num_mcast_ctas_a}, "
         f"op={'G2SMulticast' if is_a_mcast else 'G2S'}"
     )
     print(
-        f"    B G2S tile={(tile_n, tile_k)}, "
-        f"multicast_ctas={num_mcast_ctas_b}, "
+        f"    B TMA G2S tile={(tile_n, tile_k)}, multicast_ctas={num_mcast_ctas_b}, "
         f"op={'G2SMulticast' if is_b_mcast else 'G2S'}"
     )
-    print(f"    C S2G epilogue_tile={epi_tile}, epi_stage={epi_stage}")
+    print(f"    C TMA S2G epilogue_tile={epi_tile}, epi_stage={epi_stage}")
+    print("    G2S = global-to-shared mainloop load; S2G = shared-to-global store")
+    print(
+        f"    C full CTA tile={full_c_tile}, stored as {epi_stripes_n} "
+        f"epilogue stripes of {epi_tile}"
+    )
 
     print("  CTA cluster:")
     print(
-        f"    cluster_shape={cluster}, CTAs_per_cluster={math.prod(cluster)}, "
-        f"grid={grid}"
+        f"    cluster_shape={cluster}, CTAs_per_cluster={ctas_per_cluster}, grid={grid}"
     )
     print(
         f"    A multicast follows cluster-N, B multicast follows cluster-M, "
-        f"pipeline_consumer_arrive_count={consumer_arrive_count}"
+        f"pipeline_consumer_arrive_count_estimate={consumer_arrive_count_estimate}"
+    )
+    print(f"    {multicast_context}")
+    print(
+        f"    estimate uses {consumer_warps} consumer warps out of {num_warps} total "
+        f"warps from the {mma_warp_groups}-warp-group producer/consumer split"
     )
 
     print("  Shared memory and pipeline:")
     print(
-        f"    sm90_capacity={_format_bytes(smem_capacity)}, "
+        f"    sm90_capacity={_format_bytes(smem_capacity)} user-addressable budget, "
         f"ab_stage={ab_stage}, epi_stage={epi_stage}"
     )
     print(
@@ -186,15 +242,19 @@ def print_hopper_plan(gemm: object, c: hopper_gemm_helpers.TensorPack) -> None:
         f"A+B per stage={_format_bytes(ab_stage_bytes)}"
     )
     print(
-        f"    A staged={_format_bytes(a_total_bytes)}, "
-        f"B staged={_format_bytes(b_total_bytes)}, "
+        f"    A staged={_format_bytes(a_total_bytes)}, B staged="
+        f"{_format_bytes(b_total_bytes)}, "
         f"C epilogue per stage={_format_bytes(epi_stage_bytes)}"
     )
     print(
-        f"    nominal SMEM elements: "
-        f"A={_format_count(tile_m * tile_k * ab_stage)}, "
-        f"B={_format_count(tile_n * tile_k * ab_stage)}, "
-        f"C_epi={_format_count(epi_m * epi_n * epi_stage)}"
+        f"    A+B staged total={_format_bytes(ab_total_bytes)}, "
+        f"conceptual C epilogue ring={_format_bytes(epi_ring_bytes)}"
+    )
+    print("    note: epilogue staging may reuse mainloop SMEM after A/B are done")
+    print(
+        f"    nominal SMEM elements: A={_format_count(a_stage_elements * ab_stage)}, "
+        f"B={_format_count(b_stage_elements * ab_stage)}, "
+        f"C_epi={_format_count(epi_stage_elements * epi_stage)}"
     )
 
 

@@ -2,8 +2,8 @@
 
 """A slightly deeper single-GPU Hopper GEMM example.
 
-Compared with `01_h100_single_gpu_gemm.py`, this version exposes more of the host-side flow
-directly in this file:
+Compared with `01_h100_single_gpu_gemm.py`, this version exposes more of the host-side
+flow directly in this file:
 
 1. Create Hopper-friendly Torch tensors for A, B, and C.
 2. Wrap those buffers as CuTe tensors with `runtime.from_dlpack(...)`.
@@ -108,9 +108,9 @@ def main() -> None:
     ab_stage = gemm.ab_stage
     epi_stage = gemm.epi_stage
     print(
-        f"Kernel: atom_layout_mnk={atom_layout_mnk}, "
-        f"tile_shape_mnk={tile_shape_mnk}, threads_per_cta={threads_per_cta}, "
-        f"ab_stage={ab_stage}, epi_stage={epi_stage}"
+        f"Kernel: atom_layout_mnk={atom_layout_mnk}, tile_shape_mnk={tile_shape_mnk}, "
+        f"threads_per_cta={threads_per_cta}, ab_stage={ab_stage}, "
+        f"epi_stage={epi_stage}"
     )
 
     print()
